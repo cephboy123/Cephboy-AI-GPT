@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Standard helpers
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation helper for Conversation
+    function isValidConversation(data) {
+      return data.keys().hasAll(['id', 'title', 'createdAt', 'updatedAt', 'messages']) 
+        && data.keys().size() == 5
+        && data.id is string 
+        && data.id.size() <= 128
+        && data.title is string 
+        && data.title.size() <= 250
+        && (data.createdAt is int || data.createdAt is float)
+        && (data.updatedAt is int || data.updatedAt is float)
+        && data.messages is list
+        && data.messages.size() <= 1000;
+    }
+
+    match /conversations/{conversationId} {
+      allow read: if true;
+      allow delete: if true;
+      allow create: if isValidId(conversationId) 
+        && isValidConversation(incoming())
+        && incoming().id == conversationId;
+      allow update: if isValidId(conversationId)
+        && isValidConversation(incoming())
+        && incoming().id == existing().id;
+    }
+  }
+}

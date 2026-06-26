@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "Conversation": {
+      "title": "Conversation",
+      "description": "A chat session containing a list of messages.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the conversation"
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the conversation"
+        },
+        "createdAt": {
+          "type": "integer",
+          "description": "Epoch timestamp of conversation creation"
+        },
+        "updatedAt": {
+          "type": "integer",
+          "description": "Epoch timestamp of last update"
+        },
+        "messages": {
+          "type": "array",
+          "description": "List of messages in this conversation"
+        }
+      },
+      "required": ["id", "title", "createdAt", "updatedAt", "messages"]
+    }
+  },
+  "firestore": {
+    "/conversations/{conversationId}": {
+      "schema": "Conversation",
+      "description": "Collection of all conversations"
+    }
+  }
+}

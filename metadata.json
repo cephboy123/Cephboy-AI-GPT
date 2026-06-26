@@ -1,0 +1,6 @@
+{
+  "name": "Cephboy AI GPT Chat",
+  "description": "A modern AI Chat interface featuring Cephboy AI GPT, multi-provider fallbacks, real-time web search integration, and persistent Firebase chat logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
