@@ -124,12 +124,12 @@ export default function Sidebar({
   );
 
   const sidebarContent = (
-    <div className="flex flex-col h-full bg-[#000000] border-r border-white/10 text-gray-200">
+    <div className="flex flex-col h-full bg-[#0c0c0e] border-r border-zinc-800/80 text-zinc-300">
       {/* Header & New Chat button */}
       <div className="p-4 flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-orange-600/10 rounded-xl overflow-hidden border border-orange-500/20 shadow-lg shadow-orange-500/10">
+            <div className="w-10 h-10 bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 shadow-sm">
               <img 
                 src={`/logo.png?v=${logoVersion}`} 
                 alt="Logo" 
@@ -140,17 +140,17 @@ export default function Sidebar({
               />
             </div>
             <div>
-              <h1 className="font-sans font-bold text-base tracking-tight text-white">
+              <h1 className="font-sans font-bold text-base tracking-tight text-zinc-100">
                 {t.appName}
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">{t.online}</span>
+                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider">{t.online}</span>
               </div>
             </div>
           </div>
           <button 
-            className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"
+            className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
             onClick={() => setIsOpen(false)}
             title={t.close}
           >
@@ -163,34 +163,35 @@ export default function Sidebar({
             onCreateNewConversation();
             if (window.innerWidth < 768) setIsOpen(false);
           }}
-          className="flex items-center justify-center gap-2.5 w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-700 active:bg-orange-800 text-white font-medium rounded-xl transition-all duration-150 cursor-pointer text-sm shadow-lg shadow-orange-600/20 group"
+          className="flex items-center justify-center gap-2.5 w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-500 active:bg-orange-700 text-white font-bold rounded-xl transition-all duration-150 cursor-pointer text-sm shadow-md shadow-orange-600/15 group"
         >
           <Plus className="w-4 h-4 transition-transform group-hover:rotate-90" />
           {t.newChat}
         </button>
 
         {/* Language Selector */}
-        <div className="mt-2 relative">
+        <div className="mt-1 relative">
           <button
             onClick={() => setIsLangMenuOpen(!isLangMenuOpen)}
-            className="w-full flex items-center justify-between px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-xs text-gray-300 hover:bg-white/10 transition-colors"
+            className="w-full flex items-center justify-between px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-200 hover:bg-zinc-850 transition-colors shadow-xs cursor-pointer"
           >
             <div className="flex items-center gap-2">
               <Globe className="w-3.5 h-3.5 text-orange-500" />
-              <span>{currentLang?.flag} {currentLang?.name}</span>
+              <span className="font-medium">{currentLang?.flag} {currentLang?.name}</span>
             </div>
-            <ChevronDown className={`w-3 h-3 transition-transform ${isLangMenuOpen ? 'rotate-180' : ''}`} />
+            <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform ${isLangMenuOpen ? 'rotate-180' : ''}`} />
           </button>
 
           {isLangMenuOpen && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-[#0d0d0d] border border-white/10 rounded-xl shadow-2xl z-50 py-1 max-h-48 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl z-50 py-1 max-h-48 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
               {languages.map((lang) => (
                 <button
                   key={lang.id}
                   onClick={() => {
                     onLanguageChange(lang.id as Language);
+                    setIsLangMenuOpen(false);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 text-xs transition-colors hover:bg-white/10 ${language === lang.id ? 'text-orange-400 bg-orange-500/5' : 'text-gray-400'}`}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 text-xs transition-colors hover:bg-zinc-850 cursor-pointer ${language === lang.id ? 'text-orange-500 bg-orange-950/40 font-semibold' : 'text-zinc-300'}`}
                 >
                   <span>{lang.flag} {lang.name}</span>
                   {language === lang.id && <Check className="w-3 h-3" />}
@@ -204,24 +205,24 @@ export default function Sidebar({
       {/* Filter search bar */}
       <div className="px-4 mb-2">
         <div className="relative">
-          <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
+          <Search className="absolute left-3 top-2.5 w-4 h-4 text-zinc-500" />
           <input
             type="text"
             placeholder={t.conversations + "..."}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-[#0d0d0d] border border-white/10 rounded-xl py-2.5 pl-10 pr-4 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-orange-500/50 transition-colors shadow-inner"
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-2 pl-10 pr-4 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/30 transition-colors shadow-xs"
           />
         </div>
       </div>
 
       {/* Conversations List */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
-        <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider px-2 mb-2 mt-2">{t.conversations}</div>
+        <div className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider px-2 mb-2 mt-2">{t.conversations}</div>
         {filteredConversations.length === 0 ? (
           <div className="text-center py-12 px-4 flex flex-col items-center gap-3">
-            <MessageSquare className="w-10 h-10 text-white/5" />
-            <p className="text-xs text-gray-600">
+            <MessageSquare className="w-10 h-10 text-zinc-800" />
+            <p className="text-xs text-zinc-500">
               {searchQuery ? "Aucun résultat" : t.noConversations}
             </p>
           </div>
@@ -235,21 +236,21 @@ export default function Sidebar({
                   onSelectConversation(chat.id);
                   if (window.innerWidth < 768) setIsOpen(false);
                 }}
-                className={`group flex items-center justify-between px-3 py-2 rounded-md cursor-pointer transition duration-150 ${
+                className={`group flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer transition duration-150 ${
                   isSelected 
-                    ? 'bg-white/5 text-white border-l-2 border-orange-500' 
-                    : 'text-gray-400 hover:bg-white/5 hover:text-white'
+                    ? 'bg-orange-950/40 text-orange-400 border-l-4 border-orange-500 font-semibold shadow-xs' 
+                    : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100'
                 }`}
               >
                 <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <MessageSquare className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-orange-500' : 'text-gray-500'}`} />
-                  <span className="text-sm font-medium truncate pr-2">
+                  <MessageSquare className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-orange-500' : 'text-zinc-500'}`} />
+                  <span className="text-sm truncate pr-2">
                     {chat.title || "Chat sans titre"}
                   </span>
                 </div>
                 <button
                   onClick={(e) => handleDeleteConversation(e, chat.id)}
-                  className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 rounded transition-opacity cursor-pointer"
+                  className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 rounded transition-opacity cursor-pointer"
                   title="Supprimer la conversation"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -261,12 +262,12 @@ export default function Sidebar({
       </div>
 
       {/* Settings Button Only */}
-      <div className="p-4 border-t border-white/10 bg-[#000000] font-sans">
+      <div className="p-4 border-t border-zinc-800 bg-zinc-900/20 font-sans">
         <button
           onClick={onOpenSettings}
-          className="w-full text-[11px] bg-white/5 hover:bg-white/10 text-gray-400 px-3 py-2 rounded-lg border border-white/5 transition flex items-center justify-center gap-2 group"
+          className="w-full text-[11px] bg-zinc-900 hover:bg-zinc-850 text-zinc-300 px-3 py-2.5 rounded-lg border border-zinc-800 transition flex items-center justify-center gap-2 group shadow-xs cursor-pointer font-semibold"
         >
-          <Activity className="w-3.5 h-3.5 text-gray-500 group-hover:text-orange-500 transition-colors" />
+          <Activity className="w-3.5 h-3.5 text-zinc-400 group-hover:text-orange-500 transition-colors" />
           {t.settings}
         </button>
       </div>
@@ -276,7 +277,7 @@ export default function Sidebar({
   return (
     <>
       {/* Desktop Sidebar */}
-      <aside className={`flex-shrink-0 h-screen hidden md:block select-none transition-all duration-300 ease-in-out border-r border-white/10 ${isOpen ? 'w-80 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
+      <aside className={`flex-shrink-0 h-screen hidden md:block select-none transition-all duration-300 ease-in-out border-r border-zinc-800/80 ${isOpen ? 'w-80 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
         <div className="w-80 h-full">
           {sidebarContent}
         </div>
@@ -286,10 +287,10 @@ export default function Sidebar({
       {isOpen && (
         <div className="fixed inset-0 z-50 flex md:hidden">
           <div 
-            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity"
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity"
             onClick={() => setIsOpen(false)}
           />
-          <div className="relative flex flex-col w-4/5 max-w-sm h-full bg-[#000000] border-r border-white/10 transform transition-transform duration-300 ease-in-out">
+          <div className="relative flex flex-col w-4/5 max-w-sm h-full bg-[#0c0c0e] border-r border-zinc-800/80 transform transition-transform duration-300 ease-in-out">
             {sidebarContent}
           </div>
         </div>

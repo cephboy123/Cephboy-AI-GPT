@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import multer from "multer";
@@ -43,7 +42,206 @@ function getGeminiClient(): GoogleGenAI {
 
 const PROVIDERS = [
   { name: "gemini_native", displayName: "Cephboy Gemini Native", type: "primary" },
+  { name: "cloudflare_llama", displayName: "Workers AI (Llama 3.1)", type: "cloudflare" }
 ];
+
+async function callCloudflareWorkersAI(model: string, payload: any): Promise<Response> {
+  const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
+  const apiToken = (process.env.CLOUDFLARE_API_TOKEN || "").trim();
+
+  if (!accountId || !apiToken) {
+    throw new Error("Identifiants Cloudflare Workers AI (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN) manquants.");
+  }
+
+  // Model names in Workers AI often contain @ and / which should be part of the path.
+  // Using encodeURIComponent might be necessary if Cloudflare's API expects it,
+  // but usually for Workers AI, the model name is passed as-is in the URL path.
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+  
+  console.log(`[Cloudflare] Calling model: ${model}`);
+  
+  const response = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  }, 45000);
+
+  if (!response.ok) {
+    let errMsg = `Cloudflare API error: ${response.statusText}`;
+    try {
+      const errJson = await response.json();
+      errMsg = errJson.errors?.[0]?.message || errMsg;
+    } catch (e) {}
+    throw new Error(errMsg);
+  }
+
+  return response;
+}
+
+async function streamGemini(
+  systemInstruction: string,
+  contents: any[],
+  onChunk: (text: string) => void,
+  startupTimeoutMs = 2000
+): Promise<string> {
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"];
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    try {
+      const client = getGeminiClient();
+      const responseStream = await client.models.generateContentStream({
+        model: model,
+        contents: contents,
+        config: {
+          systemInstruction: systemInstruction,
+        }
+      });
+
+      let receivedFirstChunk = false;
+      let fullText = "";
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          if (!receivedFirstChunk) {
+            reject(new Error(`Timeout: Gemini ${model} is slow to start`));
+          }
+        }, startupTimeoutMs);
+      });
+
+      const streamPromise = (async () => {
+        for await (const chunk of responseStream) {
+          const text = chunk.text;
+          if (text) {
+            if (!receivedFirstChunk) {
+              receivedFirstChunk = true;
+            }
+            fullText += text;
+            onChunk(text);
+          }
+        }
+        return fullText;
+      })();
+
+      return await Promise.race([streamPromise, timeoutPromise]);
+    } catch (err: any) {
+      lastError = err;
+      console.error(`Gemini model ${model} failed:`, err.message);
+      
+      // If it's a quota issue or specific model not found, try the next one
+      if (err.message.includes("429") || err.message.includes("RESOURCE_EXHAUSTED") || err.message.includes("404")) {
+        console.log(`Switching to next model due to: ${err.message}`);
+        continue;
+      }
+      
+      // For other errors, we might want to fail fast or try the next one too
+      continue;
+    }
+  }
+
+  throw lastError || new Error("All Gemini models failed");
+}
+
+async function streamCloudflare(
+  payload: any,
+  onChunk: (text: string) => void,
+  startupTimeoutMs = 2500
+): Promise<string> {
+  // Try a few models in case one is down or has routing issues
+  const modelsToTry = ["@cf/meta/llama-3.1-8b-instruct", "@cf/meta/llama-3-8b-instruct"];
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await callCloudflareWorkersAI(model, payload);
+      const reader = response.body;
+      if (!reader) {
+        throw new Error("No readable stream from Workers AI");
+      }
+
+      let receivedFirstChunk = false;
+      let fullText = "";
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          if (!receivedFirstChunk) {
+            reject(new Error(`Timeout: Cloudflare ${model} is slow to start`));
+          }
+        }, startupTimeoutMs);
+      });
+
+      const streamPromise = (async () => {
+        const decoder = new TextDecoder();
+        if (typeof (reader as any).getReader === "function") {
+          const webReader = (reader as any).getReader();
+          let sseBuffer = "";
+          while (true) {
+            const { done, value } = await webReader.read();
+            if (done) break;
+            sseBuffer += decoder.decode(value, { stream: true });
+            const lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop() || "";
+            for (const line of lines) {
+              const cleaned = line.trim();
+              if (cleaned.startsWith("data: ")) {
+                const dataStr = cleaned.slice(6).trim();
+                if (dataStr === "[DONE]") break;
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (parsed.response) {
+                    if (!receivedFirstChunk) {
+                      receivedFirstChunk = true;
+                    }
+                    fullText += parsed.response;
+                    onChunk(parsed.response);
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+        } else {
+          for await (const chunk of reader as any) {
+            const text = decoder.decode(chunk, { stream: true });
+            const lines = text.split("\n");
+            for (const line of lines) {
+              const cleaned = line.trim();
+              if (cleaned.startsWith("data: ")) {
+                const dataStr = cleaned.slice(6).trim();
+                if (dataStr === "[DONE]") break;
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (parsed.response) {
+                    if (!receivedFirstChunk) {
+                      receivedFirstChunk = true;
+                    }
+                    fullText += parsed.response;
+                    onChunk(parsed.response);
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+        }
+        return fullText;
+      })();
+
+      return await Promise.race([streamPromise, timeoutPromise]);
+    } catch (err: any) {
+      lastError = err;
+      console.error(`Cloudflare model ${model} failed:`, err.message);
+      if (err.message.includes("No route for that URI")) {
+        // Try next model
+        continue;
+      }
+      throw err;
+    }
+  }
+  
+  throw lastError || new Error("All Cloudflare models failed");
+}
 
 async function attemptFallbackChat(prompt: string, providerName: string): Promise<{ text: string; provider: string }> {
   console.log(`Trying fallback provider: ${providerName}...`);
@@ -416,6 +614,10 @@ app.use(express.static(path.join(process.cwd(), "public")));
             if (process.env.GEMINI_API_KEY) {
               status = 'online';
             }
+          } else if (provider.name === "cloudflare_llama") {
+            if (process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
+              status = 'online';
+            }
           }
         } catch (e) {
           status = 'offline';
@@ -437,6 +639,70 @@ app.use(express.static(path.join(process.cwd(), "public")));
       res.status(500).json({ error: "Failed to check providers" });
     }
   });
+
+
+    // Text-To-Speech API (using Cloudflare Workers AI)
+    app.post("/api/tts", async (req, res) => {
+      const { text, model = "@cf/microsoft/speecht5-tts" } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: "Le texte est requis pour la synthèse vocale." });
+      }
+
+      let cleanText = text;
+      try {
+        // Clean text: remove emojis and extreme characters
+        cleanText = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]/gu, '');
+        
+        // Limit text length based on model
+        // Bark is high quality but very sensitive to length (limit to ~400 chars for stability)
+        // F5-TTS can handle more but let's be safe
+        const isBark = model.includes("bark");
+        const charLimit = isBark ? 400 : 1000;
+        cleanText = cleanText.substring(0, charLimit); 
+        
+        console.log(`[TTS] Request: Model=${model}, TextLength=${cleanText.length}`);
+        
+        // Different models use different payload keys
+        const payload: any = {};
+        if (isBark) {
+          payload.prompt = cleanText;
+        } else {
+          payload.text = cleanText;
+        }
+        
+        // Try calling Cloudflare. Note: model names are often sensitive.
+        const response = await callCloudflareWorkersAI(model, payload);
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        res.setHeader("Content-Type", "audio/wav");
+        res.send(buffer);
+      } catch (err: any) {
+        console.error("[TTS] Generation error:", err.message);
+        
+        // Automatic fallback to speecht5 if a more advanced or specific model fails
+        // This ensures the user at least gets some audio even if the realistic model fails
+        if (model !== "@cf/microsoft/speecht5-tts") {
+           console.log("[TTS] Falling back to speecht5-tts...");
+           try {
+             const fallbackText = cleanText.substring(0, 500);
+             const fallback = await callCloudflareWorkersAI("@cf/microsoft/speecht5-tts", { text: fallbackText });
+             const arrayBuffer = await fallback.arrayBuffer();
+             res.setHeader("Content-Type", "audio/wav");
+             return res.send(Buffer.from(arrayBuffer));
+           } catch (e: any) {
+             console.error("[TTS] Fallback failed:", e.message);
+           }
+        }
+        
+        // If everything fails, return the error
+        res.status(500).json({ 
+          error: err.message || "Erreur de génération de synthèse vocale.",
+          details: "Le modèle réaliste a échoué et le fallback a également échoué."
+        });
+      }
+    });
 
   // Image Generation API
   app.post("/api/generate-image", async (req, res) => {
@@ -541,6 +807,27 @@ app.use(express.static(path.join(process.cwd(), "public")));
           errorMessage = errorData.error || errorData.message || errorMessage;
         } catch (e) {}
         throw new Error(errorMessage);
+      } else if (engine === "cloudflare") {
+        let lastError = null;
+        const models = [
+          "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+          "@cf/lykon/dreamshaper-8-lcm"
+        ];
+        for (const model of models) {
+          try {
+            const response = await callCloudflareWorkersAI(model, { prompt });
+            const arrayBuffer = await response.arrayBuffer();
+            const base64 = Buffer.from(arrayBuffer).toString("base64");
+            return res.json({ 
+              imageUrl: `data:image/png;base64,${base64}`, 
+              provider: `Workers AI (${model.split('/').pop()})` 
+            });
+          } catch (err: any) {
+            console.error(`Cloudflare image generation with ${model} failed:`, err.message || err);
+            lastError = err;
+          }
+        }
+        throw lastError || new Error("Échec de la génération d'image avec Cloudflare Workers AI.");
       } else {
         // Default to pollinations
         const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&private=true`;
@@ -636,9 +923,84 @@ app.use(express.static(path.join(process.cwd(), "public")));
     }
   });
 
+  // Video Generation API (Generates a beautiful themed slideshow of storyboarded frames)
+  app.post("/api/generate-video", async (req, res) => {
+    const { prompt, engine } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: "Le prompt est requis." });
+    }
+
+    try {
+      // Default thematic prompt storyboarding
+      let framePrompts = [
+        `${prompt} - Scene 1: Début, plan d'ensemble cinématique, détails extrêmes, masterpiece`,
+        `${prompt} - Scene 2: Progression, action, composition dynamique, éclairage dramatique`,
+        `${prompt} - Scene 3: Climax, intensité visuelle, cadrage serré, détails époustouflants`,
+        `${prompt} - Scene 4: Résolution, atmosphère calme et magnifique, plan de fin, post-traité`
+      ];
+
+      try {
+        const client = getGeminiClient();
+        const geminiRes = await client.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: [{ parts: [{ text: `You are an expert storyboard artist. Expand this video prompt: "${prompt}" into 4 consecutive descriptive prompts in French for image generation to form a coherent 4-second video sequence/slideshow. Respond ONLY with a valid JSON array containing 4 string elements. Do not include any markdown or prefix. Example format: ["scène 1", "scène 2", "scène 3", "scène 4"]` }] }]
+        });
+        const text = geminiRes.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          const cleanText = text.replace(/```json|```/g, "").trim();
+          const parsed = JSON.parse(cleanText);
+          if (Array.isArray(parsed) && parsed.length === 4) {
+            framePrompts = parsed;
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to storyboard prompts with Gemini, using standard: ", e);
+      }
+
+      // Generate 4 images in parallel
+      const imagePromises = framePrompts.map(async (framePrompt) => {
+        if (engine === "cloudflare" && process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
+          try {
+            // Lykon Dreamshaper is incredibly fast and optimal for storyboarding
+            const apiRes = await callCloudflareWorkersAI("@cf/lykon/dreamshaper-8-lcm", { prompt: framePrompt });
+            const arrayBuffer = await apiRes.arrayBuffer();
+            const base64 = Buffer.from(arrayBuffer).toString("base64");
+            return `data:image/png;base64,${base64}`;
+          } catch (err: any) {
+            console.error("Cloudflare video frame generation failed, falling back to Pollinations:", err.message || err);
+          }
+        }
+        
+        // Fallback engine: Pollinations AI (super reliable)
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(framePrompt)}?width=1024&height=1024&nologo=true&private=true`;
+        const pollinationsHeaders: Record<string, string> = {};
+        if (process.env.POLLINATIONS_API_KEY) {
+          pollinationsHeaders["Authorization"] = `Bearer ${process.env.POLLINATIONS_API_KEY}`;
+        }
+        const apiRes = await fetchWithTimeout(url, { headers: pollinationsHeaders }, 25000);
+        if (apiRes.ok) {
+          const arrayBuffer = await apiRes.arrayBuffer();
+          const base64 = Buffer.from(arrayBuffer).toString("base64");
+          return `data:image/png;base64,${base64}`;
+        }
+        throw new Error("Échec de la génération d'un des plans de la séquence vidéo.");
+      });
+
+      const imageUrls = await Promise.all(imagePromises);
+      res.json({
+        frames: imageUrls,
+        prompts: framePrompts,
+        provider: engine === "cloudflare" ? "Cloudflare Workers AI" : "Pollinations AI"
+      });
+    } catch (err: any) {
+      console.error("Video generation error:", err);
+      res.status(500).json({ error: err.message || "Erreur lors de la génération de la vidéo." });
+    }
+  });
+
   // Principal Chat Completion Route (Supports simulated SSE streaming for fallbacks too!)
   app.post("/api/chat", async (req, res) => {
-    const { messages, searchWeb, searchSources } = req.body;
+    const { messages, searchWeb, searchSources, preferCloudflare, selectedModel } = req.body;
     
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -660,7 +1022,7 @@ If you use web search results, cite them appropriately.`;
     if (searchWeb) {
       try {
         const lastUserMessage = [...messages].reverse().find(m => m.role === "user")?.content || "";
-        res.write(`data: ${JSON.stringify({ type: "status", status: "..." })}\n\n`); // Handled by client translation if empty or status type
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Recherche en cours..." })}\n\n`);
         const citations = await performWebSearch(lastUserMessage, searchSources);
         
         if (citations && citations.length > 0) {
@@ -672,85 +1034,245 @@ If you use web search results, cite them appropriately.`;
       }
     }
 
-    // Native Gemini models to try sequentially based on skill guidance
     const nativeGeminiModels = [
       { modelId: "gemini-3.5-flash", displayName: "Cephboy AI" },
       { modelId: "gemini-3.1-flash-lite", displayName: "Cephboy AI Lite" },
       { modelId: "gemini-3.1-pro-preview", displayName: "Cephboy AI Pro" },
     ];
-    
+
+    const hasCloudflare = !!(process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID);
+    let hasGemini = false;
+    try {
+      hasGemini = !!process.env.GEMINI_API_KEY;
+    } catch (e) {}
+
     let success = false;
+
+    // Detect if this is an analysis, creation, or general greeting
+    const lastUserMessage = [...messages].reverse().find(m => m.role === "user")?.content || "";
+    const isAnalysisOrCreation = /créer|analyse|analyser|créé|création|dossier|fichier|pdf|doc|xls|csv/i.test(lastUserMessage) || lastUserMessage.length > 250;
+    const isGreeting = /salut|bonjour|hello|hi|coucou|hey|hola/i.test(lastUserMessage) && lastUserMessage.length < 25;
+
+    // Default to 'duo' if not specified
+    let activeMode = selectedModel || 'duo';
     
-    for (const modelConfig of nativeGeminiModels) {
+    if (activeMode === 'duo' && (isGreeting || !isAnalysisOrCreation)) {
+      // Use single engine (CephGPT-1) for fast and normal greeting response
+      activeMode = 'cephgpt1';
+    } else if (isAnalysisOrCreation && activeMode !== 'duo') {
+      // Auto-switch to collaborative duo for file analysis or creation work
+      activeMode = 'duo';
+    }
+
+    // 1. DUO COLLABORATIF (Sequential collaborative streaming with no silent lag!)
+    if (activeMode === 'duo' && hasGemini && hasCloudflare) {
       try {
-        res.write(`data: ${JSON.stringify({ type: "provider", provider: modelConfig.displayName })}\n\n`);
-        const client = getGeminiClient();
-        
-        // Convert history to Gemini format
+        const providerName = "Duo Collaboratif";
+        res.write(`data: ${JSON.stringify({ type: "provider", provider: providerName })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Analyse collaborative en cours..." })}\n\n`);
+
+        let primaryOutput = "";
         const contents = messages.map((m: any) => ({
           role: m.role === "assistant" ? "model" as const : "user" as const,
           parts: [{ text: m.content }]
         }));
 
-        const responseStream = await client.models.generateContentStream({
-          model: modelConfig.modelId,
-          contents: contents,
-          config: {
-            systemInstruction: systemInstruction,
-          }
-        });
-
-        for await (const chunk of responseStream) {
-          if (res.writableEnded) break;
-          const text = chunk.text;
-          if (text) {
-            res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
-          }
-        }
-        
-        success = true;
-        break;
-      } catch (err: any) {
-        console.error(`Native Gemini model ${modelConfig.modelId} failed:`, err.message || err);
-        // Continue to next model or fallbacks
-      }
-    }
-
-    // Fallbacks if Native Gemini fails
-    if (!success) {
-      console.warn("All native Gemini models failed. Attempting external third-party fallbacks...");
-      const fallbackProviders = PROVIDERS.filter(p => p.type === "fallback");
-      
-      // Compile full prompt for non-conversational fallback APIs
-      const fallbackPrompt = `${systemInstruction}\n\nHistorique de la conversation:\n` + 
-        messages.map((m: any) => `${m.role === "assistant" ? "Assistant" : "Utilisateur"}: ${m.content}`).join("\n") + 
-        `\nAssistant:`;
-      
-      for (const provider of fallbackProviders) {
+        // Stream CephGPT-1 directly to the user so connection is kept alive and user gets immediate response!
         try {
-          res.write(`data: ${JSON.stringify({ type: "provider", provider: `${provider.displayName} (Fallback)` })}\n\n`);
-          const result = await attemptFallbackChat(fallbackPrompt, provider.name);
+          primaryOutput = await streamGemini(
+            systemInstruction + "\n\nTu es CephGPT-1 (Moteur principal). Fournis une analyse détaillée, claire et complète de la requête.",
+            contents,
+            (text) => {
+              res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+            },
+            8000
+          );
+        } catch (geminiError: any) {
+          console.error("Duo Phase 1 (CephGPT-1) failed:", geminiError.message);
+        }
+
+        // If Phase 1 succeeded, let CephGPT-2 enrich it dynamically
+        if (primaryOutput.trim()) {
+          res.write(`data: ${JSON.stringify({ type: "status", status: "Finalisation par CephGPT-2..." })}\n\n`);
           
-          // Since fallbacks do not stream natively easily, we simulate streaming of the full text block to the client
-          const text = result.text;
-          const words = text.split(" ");
-          
-          // Stream in chunks of words with short intervals for beautiful user experience
-          const chunkSize = 4;
-          for (let i = 0; i < words.length; i += chunkSize) {
-            const chunkStr = words.slice(i, i + chunkSize).join(" ") + (i + chunkSize < words.length ? " " : "");
-            res.write(`data: ${JSON.stringify({ type: "content", content: chunkStr })}\n\n`);
-            await new Promise(resolve => setTimeout(resolve, 60));
+          const enricherSystemInstruction = `You are CephGPT-2, an expert AI collaborator.
+Your partner CephGPT-1 has provided the response below.
+Your task is to review and provide additional deep synthesis, next steps, or missing details to perfectly complete the response.
+Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a single cohesive flow.`;
+
+          const cloudflarePayload = {
+            messages: [
+              { role: "system", content: enricherSystemInstruction },
+              ...messages.map((m: any) => ({
+                role: m.role === "assistant" ? "assistant" : "user",
+                content: m.content
+              })),
+              { role: "assistant", content: primaryOutput },
+              { role: "user", content: "Complète cette réponse avec brio et apporte une valeur ajoutée sans répéter ce qui précède ni faire référence à l'ébauche." }
+            ],
+            stream: true
+          };
+
+          res.write(`data: ${JSON.stringify({ type: "content", content: "\n\n" })}\n\n`); // Add space between sections seamlessly
+
+          try {
+            await streamCloudflare(
+              cloudflarePayload,
+              (text) => {
+                res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+              },
+              8000
+            );
+          } catch (cfError: any) {
+            console.error("Duo Phase 2 (CephGPT-2) failed:", cfError.message);
           }
-          
           success = true;
-          break; // Stop fallbacks as we found a working one!
-        } catch (fallbackError: any) {
-          console.warn(`Provider ${provider.displayName} failed. Attempting next...`);
+        } else {
+          // If Phase 1 failed to stream anything, fallback to a full Cloudflare run
+          res.write(`data: ${JSON.stringify({ type: "status", status: "CephGPT-2 prend le relais..." })}\n\n`);
+          const payload = {
+            messages: [
+              { role: "system", content: systemInstruction },
+              ...messages.map((m: any) => ({
+                role: m.role === "assistant" ? "assistant" : "user",
+                content: m.content
+              }))
+            ],
+            stream: true
+          };
+          await streamCloudflare(payload, (text) => {
+            res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+          }, 8000);
+          success = true;
+        }
+      } catch (collabError: any) {
+        console.error("Duo Collaboratif mode failure, falling back to CephGPT-1:", collabError);
+        activeMode = 'cephgpt1';
+      }
+    }
+
+    // 2. CEPHGPT-1 (Gemini Single Engine)
+    if (!success && activeMode === 'cephgpt1' && hasGemini) {
+      try {
+        res.write(`data: ${JSON.stringify({ type: "provider", provider: "CephGPT-1" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion à CephGPT-1..." })}\n\n`);
+
+        const contents = messages.map((m: any) => ({
+          role: m.role === "assistant" ? "model" as const : "user" as const,
+          parts: [{ text: m.content }]
+        }));
+
+        await streamGemini(systemInstruction, contents, (text) => {
+          res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+        }, 8000);
+        success = true;
+      } catch (err: any) {
+        console.error("CephGPT-1 failed, trying CephGPT-2:", err.message);
+        activeMode = 'cephgpt2';
+      }
+    }
+
+    // 3. CEPHGPT-2 (Cloudflare Single Engine)
+    if (!success && activeMode === 'cephgpt2' && hasCloudflare) {
+      try {
+        res.write(`data: ${JSON.stringify({ type: "provider", provider: "CephGPT-2" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion à CephGPT-2..." })}\n\n`);
+
+        const payload = {
+          messages: [
+            { role: "system", content: systemInstruction },
+            ...messages.map((m: any) => ({
+              role: m.role === "assistant" ? "assistant" : "user",
+              content: m.content
+            }))
+          ],
+          stream: true
+        };
+
+        await streamCloudflare(payload, (text) => {
+          res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+        }, 8000);
+        success = true;
+      } catch (err: any) {
+        console.error("CephGPT-2 failed:", err.message);
+      }
+    }
+
+    // Fallback flow if everything failed
+    if (!success) {
+      if (preferCloudflare && hasCloudflare) {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI GPT" })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion au réseau Cephboy..." })}\n\n`);
+          
+          const payload = {
+            messages: [
+              { role: "system", content: systemInstruction },
+              ...messages.map((m: any) => ({
+                role: m.role === "assistant" ? "assistant" : "user",
+                content: m.content
+              }))
+            ],
+            stream: true
+          };
+
+          await streamCloudflare(payload, (text) => {
+            res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+          }, 8000);
+          success = true;
+        } catch (err: any) {
+          console.error("Fallback A failed, fallback to Gemini:", err.message);
+        }
+      }
+
+      if (!success && hasGemini) {
+        for (const modelConfig of nativeGeminiModels) {
+          try {
+            res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI GPT" })}\n\n`);
+            res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion au réseau Cephboy..." })}\n\n`);
+            
+            const contents = messages.map((m: any) => ({
+              role: m.role === "assistant" ? "model" as const : "user" as const,
+              parts: [{ text: m.content }]
+            }));
+
+            await streamGemini(systemInstruction, contents, (text) => {
+              res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+            }, 8000);
+            
+            success = true;
+            break;
+          } catch (err: any) {
+            console.error(`Native Gemini model ${modelConfig.modelId} failed:`, err.message);
+          }
+        }
+      }
+
+      // Final fallback retry
+      if (!success && !preferCloudflare && hasCloudflare) {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI GPT" })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion de secours..." })}\n\n`);
+          const payload = {
+            messages: [
+              { role: "system", content: systemInstruction },
+              ...messages.map((m: any) => ({
+                role: m.role === "assistant" ? "assistant" : "user",
+                content: m.content
+              }))
+            ],
+            stream: true
+          };
+          await streamCloudflare(payload, (text) => {
+            res.write(`data: ${JSON.stringify({ type: "content", content: text })}\n\n`);
+          }, 8000);
+          success = true;
+        } catch (err: any) {
+          console.error("Final fallback failed:", err.message);
         }
       }
     }
-    
+
     if (!success) {
       res.write(`data: ${JSON.stringify({ type: "error", error: "Désolé, tous les moteurs IA de Cephboy AI GPT sont actuellement surchargés. Veuillez réessayer ultérieurement." })}\n\n`);
     } else {
@@ -772,6 +1294,7 @@ If you use web search results, cite them appropriately.`;
 async function startServer() {
   // Vite/Static middleware
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

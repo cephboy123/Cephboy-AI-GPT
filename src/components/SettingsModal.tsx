@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Globe, Image, Languages, Check, Search } from 'lucide-react';
+import { X, Globe, Image, Languages, Check, Search, Cpu, AlertTriangle } from 'lucide-react';
 import { translations, Language, languages } from '../translations';
 
 interface SettingsModalProps {
@@ -11,10 +11,14 @@ interface SettingsModalProps {
   setSearchWeb: (val: boolean) => void;
   isImageMode: boolean;
   setIsImageMode: (val: boolean) => void;
-  imageEngine: 'pollinations' | 'gemini' | 'pixelapi';
-  setImageEngine: (val: 'pollinations' | 'gemini' | 'pixelapi') => void;
+  imageEngine: 'pollinations' | 'gemini' | 'pixelapi' | 'cloudflare';
+  setImageEngine: (val: 'pollinations' | 'gemini' | 'pixelapi' | 'cloudflare') => void;
   linkedinSearch: boolean;
   setLinkedinSearch: (val: boolean) => void;
+  preferCloudflare: boolean;
+  setPreferCloudflare: (val: boolean) => void;
+  selectedModel?: 'cephgpt1' | 'cephgpt2' | 'duo';
+  onSelectedModelChange?: (val: 'cephgpt1' | 'cephgpt2' | 'duo') => void;
 }
 
 export default function SettingsModal({
@@ -29,7 +33,11 @@ export default function SettingsModal({
   imageEngine,
   setImageEngine,
   linkedinSearch,
-  setLinkedinSearch
+  setLinkedinSearch,
+  preferCloudflare,
+  setPreferCloudflare,
+  selectedModel = 'duo',
+  onSelectedModelChange
 }: SettingsModalProps) {
   const t = translations[language];
 
@@ -49,30 +57,30 @@ export default function SettingsModal({
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            className="relative w-full max-w-lg bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-2xl overflow-hidden"
+            className="relative w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/5">
-              <div className="flex items-center gap-2 text-white font-medium">
-                <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center">
-                  <Globe className="w-5 h-5 text-orange-400" />
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
+              <div className="flex items-center gap-2 text-slate-900 font-bold">
+                <div className="w-8 h-8 rounded-lg bg-orange-50 flex items-center justify-center">
+                  <Globe className="w-5 h-5 text-orange-600" />
                 </div>
                 {t.settingsTitle}
               </div>
               <button 
                 onClick={onClose}
-                className="p-2 text-gray-400 hover:text-white transition rounded-lg hover:bg-white/5"
+                className="p-2 text-slate-400 hover:text-slate-600 transition rounded-lg hover:bg-slate-100"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Content */}
-            <div className="p-6 space-y-8 max-h-[70vh] overflow-y-auto">
+            <div className="p-6 space-y-8 max-h-[70vh] overflow-y-auto bg-white">
               {/* Language Selection */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  <Languages className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  <Languages className="w-4 h-4 text-slate-400" />
                   {t.selectLanguage}
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -80,10 +88,10 @@ export default function SettingsModal({
                     <button
                       key={lang.id}
                       onClick={() => onLanguageChange(lang.id as Language)}
-                      className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-all ${
+                      className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-all cursor-pointer ${
                         language === lang.id 
-                          ? 'bg-orange-500/10 border-orange-500/50 text-orange-400' 
-                          : 'bg-white/5 border-transparent text-gray-400 hover:bg-white/10'
+                          ? 'bg-orange-50 border-orange-200 text-orange-600 font-semibold' 
+                          : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
                       }`}
                     >
                       <span className="flex items-center gap-2">
@@ -96,22 +104,65 @@ export default function SettingsModal({
                 </div>
               </section>
 
+              {/* Engine Selection */}
+              <section className="space-y-4">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  <Cpu className="w-4 h-4 text-slate-400" />
+                  Choix de l'Assistant IA
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => onSelectedModelChange?.('cephgpt1')}
+                    className={`flex flex-col items-center justify-center p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                      selectedModel === 'cephgpt1'
+                        ? 'bg-orange-50 border-orange-300 text-orange-600 font-bold'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="text-sm">CephGPT-1</span>
+                    <span className="text-[9px] text-slate-400 mt-1 leading-none font-medium">Rapide • Gemini</span>
+                  </button>
+                  <button
+                    onClick={() => onSelectedModelChange?.('cephgpt2')}
+                    className={`flex flex-col items-center justify-center p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                      selectedModel === 'cephgpt2'
+                        ? 'bg-orange-50 border-orange-300 text-orange-600 font-bold'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="text-sm">CephGPT-2</span>
+                    <span className="text-[9px] text-slate-400 mt-1 leading-none font-medium">Smart • Cloudflare</span>
+                  </button>
+                  <button
+                    onClick={() => onSelectedModelChange?.('duo')}
+                    className={`flex flex-col items-center justify-center p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                      selectedModel === 'duo'
+                        ? 'bg-orange-50 border-orange-300 text-orange-600 font-bold'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="text-sm font-bold">Mode Duo</span>
+                    <span className="text-[9px] text-slate-400 mt-1 leading-none font-medium">Collaboratif • Auto</span>
+                  </button>
+                </div>
+              </section>
+
               {/* LinkedIn Integration */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  <Globe className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  <Globe className="w-4 h-4 text-slate-400" />
                   {t.linkedinIntegration}
                 </div>
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-4">
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex-1 pr-4">
-                      <div className="text-sm font-medium text-white">{t.linkedinIntegration}</div>
-                      <div className="text-xs text-gray-500 mt-1">{t.linkedinDesc}</div>
+                      <div className="text-sm font-semibold text-slate-850">{t.linkedinIntegration}</div>
+                      <div className="text-xs text-slate-500 mt-1">{t.linkedinDesc}</div>
                     </div>
                     <button
                       onClick={() => setLinkedinSearch(!linkedinSearch)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
-                        linkedinSearch ? 'bg-[#0077b5]' : 'bg-gray-700'
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none cursor-pointer ${
+                        linkedinSearch ? 'bg-[#0077b5]' : 'bg-slate-200'
                       }`}
                     >
                       <span
@@ -121,35 +172,25 @@ export default function SettingsModal({
                       />
                     </button>
                   </div>
-                  
-                  {linkedinSearch && (
-                    <div className="pt-4 border-t border-white/5 space-y-3">
-                      <div className="bg-orange-500/10 border border-orange-500/20 p-3 rounded-xl">
-                        <p className="text-[10px] text-orange-400 leading-relaxed">
-                          Configurez vos clés <strong>LINKEDIN_CLIENT_ID</strong> et <strong>LINKEDIN_CLIENT_SECRET</strong> dans les paramètres d'environnement de l'application pour activer la recherche réelle.
-                        </p>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </section>
 
               {/* AI Features */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  <Search className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  <Search className="w-4 h-4 text-slate-400" />
                   {t.aiSearch}
                 </div>
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-4">
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-sm font-medium text-white">{t.searchWeb}</div>
-                      <div className="text-xs text-gray-500 mt-1">{t.aiSearchDesc}</div>
+                      <div className="text-sm font-semibold text-slate-850">{t.searchWeb}</div>
+                      <div className="text-xs text-slate-500 mt-1">{t.aiSearchDesc}</div>
                     </div>
                     <button
                       onClick={() => setSearchWeb(!searchWeb)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
-                        searchWeb ? 'bg-orange-500' : 'bg-gray-700'
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none cursor-pointer ${
+                        searchWeb ? 'bg-orange-600' : 'bg-slate-200'
                       }`}
                     >
                       <span
@@ -164,20 +205,20 @@ export default function SettingsModal({
 
               {/* Image Generation */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  <Image className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  <Image className="w-4 h-4 text-slate-400" />
                   {t.aiImages}
                 </div>
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-6">
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-sm font-medium text-white">{t.imageMode}</div>
-                      <div className="text-xs text-gray-500 mt-1">{t.aiImageDesc}</div>
+                      <div className="text-sm font-semibold text-slate-850">{t.imageMode}</div>
+                      <div className="text-xs text-slate-500 mt-1">{t.aiImageDesc}</div>
                     </div>
                     <button
                       onClick={() => setIsImageMode(!isImageMode)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
-                        isImageMode ? 'bg-orange-500' : 'bg-gray-700'
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none cursor-pointer ${
+                        isImageMode ? 'bg-orange-600' : 'bg-slate-200'
                       }`}
                     >
                       <span
@@ -187,43 +228,21 @@ export default function SettingsModal({
                       />
                     </button>
                   </div>
-
-                  {isImageMode && (
-                    <div className="space-y-3 pt-4 border-t border-white/5">
-                      <div className="text-xs font-medium text-gray-400">{t.imageEngine}</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() => setImageEngine('pollinations')}
-                          className={`px-4 py-2.5 rounded-xl border text-xs font-medium transition-all ${
-                            imageEngine === 'pollinations'
-                              ? 'bg-orange-500/10 border-orange-500/50 text-orange-400'
-                              : 'bg-white/5 border-transparent text-gray-500 hover:bg-white/10'
-                          }`}
-                        >
-                          Moteur Standard
-                        </button>
-                        <button
-                          onClick={() => setImageEngine('gemini')}
-                          className={`px-4 py-2.5 rounded-xl border text-xs font-medium transition-all ${
-                            imageEngine === 'gemini'
-                              ? 'bg-orange-500/10 border-orange-500/50 text-orange-400'
-                              : 'bg-white/5 border-transparent text-gray-500 hover:bg-white/10'
-                          }`}
-                        >
-                          Moteur Premium
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </section>
+
+              {/* Disclaimer */}
+              <div className="flex gap-3 p-4 rounded-xl bg-amber-50 border border-amber-100 text-amber-800 text-xs shadow-xs">
+                <AlertTriangle className="w-4.5 h-4.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                <span className="font-medium leading-relaxed">{t.disclaimer}</span>
+              </div>
             </div>
 
             {/* Footer */}
-            <div className="p-6 bg-white/5 border-t border-white/5 flex justify-end">
+            <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-end">
               <button
                 onClick={onClose}
-                className="px-6 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl text-sm font-semibold transition shadow-lg shadow-orange-500/20"
+                className="px-6 py-2.5 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-sm font-bold transition shadow-md shadow-orange-600/10 cursor-pointer"
               >
                 {t.saveSettings}
               </button>

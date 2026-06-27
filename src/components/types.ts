@@ -12,6 +12,7 @@ export interface Message {
   timestamp: number;
   citations?: Citation[];
   imageUrl?: string;
+  videoFrames?: string[];
   provider?: string;
   providerUsed?: string;
   isStreaming?: boolean;

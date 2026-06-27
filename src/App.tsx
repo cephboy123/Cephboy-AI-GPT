@@ -26,8 +26,23 @@ export default function App() {
   const [searchWeb, setSearchWeb] = useState(false);
   const [linkedinSearch, setLinkedinSearch] = useState(false);
   const [isImageMode, setIsImageMode] = useState(false);
-  const [imageEngine, setImageEngine] = useState<'pollinations' | 'gemini' | 'pixelapi'>('pollinations');
+  const [isVideoMode, setIsVideoMode] = useState(false);
+  const [imageEngine, setImageEngine] = useState<'pollinations' | 'gemini' | 'pixelapi' | 'cloudflare'>('pollinations');
+  const [preferCloudflare, setPreferCloudflare] = useState<boolean>(() => localStorage.getItem('prefer-cloudflare') === 'true');
+  const [selectedModel, setSelectedModel] = useState<'cephgpt1' | 'cephgpt2' | 'duo'>(() => {
+    return (localStorage.getItem('selected-model') as 'cephgpt1' | 'cephgpt2' | 'duo') || 'duo';
+  });
   const [logoVersion, setLogoVersion] = useState(Date.now());
+
+  const handleSetSelectedModel = (val: 'cephgpt1' | 'cephgpt2' | 'duo') => {
+    setSelectedModel(val);
+    localStorage.setItem('selected-model', val);
+  };
+
+  const handleSetPreferCloudflare = (val: boolean) => {
+    setPreferCloudflare(val);
+    localStorage.setItem('prefer-cloudflare', String(val));
+  };
   const [language, setLanguage] = useState<Language>(() => {
     const saved = localStorage.getItem('app-language');
     return (saved as Language) || 'fr';
@@ -116,9 +131,11 @@ export default function App() {
       activeId = `chat_${Date.now()}`;
       const newChat: Conversation = {
         id: activeId,
-        title: imageEngine 
-          ? `Image: ${content.slice(0, 25)}...`
-          : content.slice(0, 30) + (content.length > 30 ? "..." : ""),
+        title: imageEngine === 'video'
+          ? `Vidéo: ${content.slice(0, 25)}...`
+          : imageEngine 
+            ? `Image: ${content.slice(0, 25)}...`
+            : content.slice(0, 30) + (content.length > 30 ? "..." : ""),
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: []
@@ -133,11 +150,113 @@ export default function App() {
       }
     }
 
+    if (imageEngine === 'video') {
+      const userMsg: Message = {
+        id: `msg_${Date.now()}_user`,
+        role: 'user',
+        content: `Générer une vidéo : "${content}"`,
+        timestamp: Date.now()
+      };
+      
+      const currentMessages = conversation ? [...conversation.messages] : [];
+      const updatedMessages = [...currentMessages, userMsg];
+      
+      const updatedConv: Conversation = {
+        id: activeId,
+        title: conversation?.title === "Nouvelle conversation" || !conversation 
+          ? `Vidéo: ${content.slice(0, 25)}...`
+          : conversation.title,
+        createdAt: conversation?.createdAt || Date.now(),
+        updatedAt: Date.now(),
+        messages: updatedMessages
+      };
+      
+      setConversation(updatedConv);
+      setIsGenerating(true);
+      setCurrentProvider('Cloudflare Workers AI');
+      setCurrentStatusText("Génération de la séquence vidéo en cours...");
+      
+      try {
+        await setDoc(doc(db, 'conversations', activeId), updatedConv);
+      } catch (err) {
+        console.error("Error saving user message:", err);
+      }
+      
+      const assistantMsgId = `msg_${Date.now()}_assistant`;
+      
+      try {
+        const response = await fetch('/api/generate-video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: content, engine: 'cloudflare' }) // try cloudflare first
+        });
+        
+        if (!response.ok) {
+          let errorMessage = "Erreur lors de la génération de la vidéo.";
+          try {
+            const errData = await response.json();
+            errorMessage = errData.error || errorMessage;
+          } catch (e) {}
+          throw new Error(errorMessage);
+        }
+        
+        const data = await response.json();
+        const frames = data.frames || [];
+        const finalProvider = data.provider || "System";
+        
+        if (frames.length === 0) {
+          throw new Error("Aucune séquence d'image n'a été générée pour la vidéo.");
+        }
+        
+        const finalMsg: Message = {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: `Voici la séquence vidéo générée avec succès selon votre prompt : "${content}" (moteur ${finalProvider}).`,
+          timestamp: Date.now(),
+          providerUsed: finalProvider,
+          videoFrames: frames
+        };
+        
+        const finalMessages = [...updatedMessages, finalMsg];
+        const finalConv: Conversation = {
+          ...updatedConv,
+          messages: finalMessages,
+          updatedAt: Date.now()
+        };
+        
+        setConversation(finalConv);
+        await setDoc(doc(db, 'conversations', activeId), finalConv);
+        
+      } catch (err: any) {
+        console.error("Video generation error:", err);
+        const errMsg: Message = {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: `Échec de la génération de la vidéo : ${err.message || "Erreur inconnue."}`,
+          timestamp: Date.now(),
+          providerUsed: "Système Vidéo"
+        };
+        
+        const finalMessages = [...updatedMessages, errMsg];
+        const finalConv: Conversation = {
+          ...updatedConv,
+          messages: finalMessages,
+          updatedAt: Date.now()
+        };
+        setConversation(finalConv);
+        await setDoc(doc(db, 'conversations', activeId), finalConv);
+      } finally {
+        setIsGenerating(false);
+        setCurrentStatusText('');
+      }
+      return;
+    }
+
     if (imageEngine) {
       const userMsg: Message = {
         id: `msg_${Date.now()}_user`,
         role: 'user',
-        content: `Générer une image : "${content}" (${imageEngine === 'gemini' ? 'Gemini AI' : 'Pollinations AI'})`,
+        content: `Générer une image : "${content}" (${imageEngine === 'gemini' ? 'Gemini AI' : imageEngine === 'cloudflare' ? 'Workers AI' : 'Pollinations AI'})`,
         timestamp: Date.now()
       };
       
@@ -286,7 +405,8 @@ export default function App() {
         body: JSON.stringify({
           messages: updatedMessages,
           searchWeb,
-          searchSources: linkedinSearch ? [...sources, 'linkedin'] : sources
+          searchSources: linkedinSearch ? [...sources, 'linkedin'] : sources,
+          selectedModel
         })
       });
 
@@ -435,7 +555,7 @@ export default function App() {
     });
   };
 
-  const handleUploadFile = async (file: File) => {
+  const handleUploadFile = async (file: File, userPrompt?: string) => {
     // Special check for logo update
     // If the file name contains 'logo' and it's an image, we treat it as a logo update
     const isLogoUpdate = file.name.toLowerCase().includes('logo') && file.type.startsWith('image/');
@@ -483,7 +603,7 @@ export default function App() {
     }
 
     if (file.type.startsWith('image/')) {
-      return handleUploadImage(file);
+      return handleUploadImage(file, userPrompt);
     }
 
     // Handle documents
@@ -525,7 +645,7 @@ export default function App() {
       await setDoc(doc(db, 'conversations', activeId), updatedConv);
 
       // Automatically ask AI to analyze
-      handleSendMessage(`J'ai téléchargé un fichier nommé "${file.name}". Peux-tu l'analyser et m'en faire un résumé ou répondre à mes questions à son sujet ?`, false, ['duckduckgo', 'wikipedia']);
+      handleSendMessage(userPrompt || `J'ai téléchargé un fichier nommé "${file.name}". Peux-tu l'analyser et m'en faire un résumé ou répondre à mes questions à son sujet ?`, false, ['duckduckgo', 'wikipedia']);
 
     } catch (err: any) {
       console.error("File upload error:", err);
@@ -536,7 +656,7 @@ export default function App() {
     }
   };
 
-  const handleUploadImage = async (file: File) => {
+  const handleUploadImage = async (file: File, userPrompt?: string) => {
     let activeId = currentConversationId;
     if (!activeId) {
       activeId = `chat_${Date.now()}`;
@@ -556,7 +676,7 @@ export default function App() {
       const userMsg: Message = {
         id: `msg_${Date.now()}_user`,
         role: 'user',
-        content: `Image uploadée : ${file.name}`,
+        content: userPrompt || `Image uploadée : ${file.name}`,
         timestamp: Date.now(),
         imageUrl: base64
       };
@@ -575,7 +695,7 @@ export default function App() {
       await setDoc(doc(db, 'conversations', activeId), updatedConv);
       
       // Automatically trigger analysis for image
-      handleSendMessage(`J'ai téléchargé une image nommée "${file.name}". Peux-tu l'analyser et me dire ce que tu y vois ?`, false, []);
+      handleSendMessage(userPrompt || `J'ai téléchargé une image nommée "${file.name}". Peux-tu l'analyser et me dire ce que tu y vois ?`, false, []);
     } catch (err) {
       console.error("Upload error:", err);
       alert("Erreur lors de l'upload de l'image.");
@@ -583,7 +703,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#0d0d0d] overflow-hidden font-sans antialiased text-gray-200">
+    <div className="flex h-screen h-[100dvh] w-screen bg-[#0d0d0d] overflow-hidden font-sans antialiased text-zinc-100">
       <Sidebar
         currentConversationId={currentConversationId}
         onSelectConversation={handleSelectConversation}
@@ -610,10 +730,15 @@ export default function App() {
         setSearchWeb={setSearchWeb}
         isImageMode={isImageMode}
         setIsImageMode={setIsImageMode}
+        isVideoMode={isVideoMode}
+        setIsVideoMode={setIsVideoMode}
         imageEngine={imageEngine}
         setImageEngine={setImageEngine}
         linkedinSearch={linkedinSearch}
         logoVersion={logoVersion}
+        onNewConversation={handleCreateNewConversation}
+        selectedModel={selectedModel}
+        onSelectedModelChange={handleSetSelectedModel}
       />
       {isSettingsOpen && (
         <SettingsModal 
@@ -629,6 +754,10 @@ export default function App() {
           setImageEngine={setImageEngine}
           linkedinSearch={linkedinSearch}
           setLinkedinSearch={setLinkedinSearch}
+          preferCloudflare={preferCloudflare}
+          setPreferCloudflare={handleSetPreferCloudflare}
+          selectedModel={selectedModel}
+          onSelectedModelChange={handleSetSelectedModel}
         />
       )}
     </div>
