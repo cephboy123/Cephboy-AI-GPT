@@ -53,9 +53,10 @@ async function callCloudflareWorkersAI(model: string, payload: any): Promise<Res
     throw new Error("Identifiants Cloudflare Workers AI (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN) manquants.");
   }
 
-  // Model names in Workers AI often contain @ and / which should be part of the path.
-  // Using encodeURIComponent might be necessary if Cloudflare's API expects it,
-  // but usually for Workers AI, the model name is passed as-is in the URL path.
+  if (accountId.includes("@")) {
+    throw new Error("L'identifiant CLOUDFLARE_ACCOUNT_ID semble être une adresse e-mail. Veuillez utiliser l'ID hexadécimal de 32 caractères de votre compte Cloudflare (visible dans l'URL de votre tableau de bord ou dans la section Workers AI).");
+  }
+
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
   
   console.log(`[Cloudflare] Calling model: ${model}`);
@@ -70,7 +71,10 @@ async function callCloudflareWorkersAI(model: string, payload: any): Promise<Res
   }, 45000);
 
   if (!response.ok) {
-    let errMsg = `Cloudflare API error: ${response.statusText}`;
+    let errMsg = `Cloudflare API error: ${response.statusText} (${response.status})`;
+    if (response.status === 404) {
+      errMsg = `Cloudflare Error 404 (No route for that URI). Vérifiez que votre CLOUDFLARE_ACCOUNT_ID (${accountId.slice(0, 4)}...) est correct et qu'il s'agit bien de l'ID hexadécimal.`;
+    }
     try {
       const errJson = await response.json();
       errMsg = errJson.errors?.[0]?.message || errMsg;
@@ -87,11 +91,19 @@ async function streamGemini(
   onChunk: (text: string) => void,
   startupTimeoutMs = 2000
 ): Promise<string> {
-  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"];
+  const modelsToTry = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-2.0-flash",
+    "gemini-pro-latest"
+  ];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
     try {
+      console.log(`[Gemini] Attempting model: ${model}`);
       const client = getGeminiClient();
       const responseStream = await client.models.generateContentStream({
         model: model,
@@ -132,12 +144,14 @@ async function streamGemini(
       console.error(`Gemini model ${model} failed:`, err.message);
       
       // If it's a quota issue or specific model not found, try the next one
-      if (err.message.includes("429") || err.message.includes("RESOURCE_EXHAUSTED") || err.message.includes("404")) {
-        console.log(`Switching to next model due to: ${err.message}`);
+      if (err.message.includes("429") || err.message.includes("RESOURCE_EXHAUSTED") || err.message.includes("404") || err.message.includes("not found")) {
+        console.log(`Switching to next Gemini model due to: ${err.message}`);
+        // Small delay to let quota breathe
+        await new Promise(r => setTimeout(r, 500));
         continue;
       }
       
-      // For other errors, we might want to fail fast or try the next one too
+      // For other errors, we might want to try the next one too
       continue;
     }
   }
@@ -232,11 +246,8 @@ async function streamCloudflare(
     } catch (err: any) {
       lastError = err;
       console.error(`Cloudflare model ${model} failed:`, err.message);
-      if (err.message.includes("No route for that URI")) {
-        // Try next model
-        continue;
-      }
-      throw err;
+      // ALWAYS try the next model if one fails, unless we're out of models
+      continue;
     }
   }
   
@@ -643,7 +654,7 @@ app.use(express.static(path.join(process.cwd(), "public")));
 
     // Text-To-Speech API (using Cloudflare Workers AI)
     app.post("/api/tts", async (req, res) => {
-      const { text, model = "@cf/microsoft/speecht5-tts" } = req.body;
+      const { text, model: requestedModel = "@cf/microsoft/speecht5-tts" } = req.body;
       if (!text) {
         return res.status(400).json({ error: "Le texte est requis pour la synthèse vocale." });
       }
@@ -653,198 +664,144 @@ app.use(express.static(path.join(process.cwd(), "public")));
         // Clean text: remove emojis and extreme characters
         cleanText = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]/gu, '');
         
-        // Limit text length based on model
-        // Bark is high quality but very sensitive to length (limit to ~400 chars for stability)
-        // F5-TTS can handle more but let's be safe
-        const isBark = model.includes("bark");
-        const charLimit = isBark ? 400 : 1000;
-        cleanText = cleanText.substring(0, charLimit); 
-        
-        console.log(`[TTS] Request: Model=${model}, TextLength=${cleanText.length}`);
-        
-        // Different models use different payload keys
-        const payload: any = {};
-        if (isBark) {
-          payload.prompt = cleanText;
-        } else {
-          payload.text = cleanText;
+        const modelsToTry = [requestedModel, "@cf/suno/bark", "@cf/microsoft/speecht5-tts"];
+        let lastError: any = null;
+        let finalResponse: any = null;
+
+        for (const model of modelsToTry) {
+          try {
+            const isBark = model.includes("bark");
+            const charLimit = isBark ? 400 : 1000;
+            const finalPrompt = cleanText.substring(0, charLimit);
+            
+            console.log(`[TTS] Attempting model: ${model}`);
+            const payload = isBark ? { prompt: finalPrompt } : { text: finalPrompt };
+            
+            finalResponse = await callCloudflareWorkersAI(model, payload);
+            if (finalResponse && finalResponse.ok) break;
+          } catch (err: any) {
+            console.warn(`[TTS] Model ${model} failed:`, err.message);
+            lastError = err;
+          }
+        }
+
+        if (!finalResponse || !finalResponse.ok) {
+          throw lastError || new Error("All TTS models failed");
         }
         
-        // Try calling Cloudflare. Note: model names are often sensitive.
-        const response = await callCloudflareWorkersAI(model, payload);
-        
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-
+        const arrayBuffer = await finalResponse.arrayBuffer();
         res.setHeader("Content-Type", "audio/wav");
-        res.send(buffer);
+        res.send(Buffer.from(arrayBuffer));
       } catch (err: any) {
         console.error("[TTS] Generation error:", err.message);
-        
-        // Automatic fallback to speecht5 if a more advanced or specific model fails
-        // This ensures the user at least gets some audio even if the realistic model fails
-        if (model !== "@cf/microsoft/speecht5-tts") {
-           console.log("[TTS] Falling back to speecht5-tts...");
-           try {
-             const fallbackText = cleanText.substring(0, 500);
-             const fallback = await callCloudflareWorkersAI("@cf/microsoft/speecht5-tts", { text: fallbackText });
-             const arrayBuffer = await fallback.arrayBuffer();
-             res.setHeader("Content-Type", "audio/wav");
-             return res.send(Buffer.from(arrayBuffer));
-           } catch (e: any) {
-             console.error("[TTS] Fallback failed:", e.message);
-           }
-        }
-        
-        // If everything fails, return the error
         res.status(500).json({ 
           error: err.message || "Erreur de génération de synthèse vocale.",
-          details: "Le modèle réaliste a échoué et le fallback a également échoué."
+          details: "Tous les modèles de synthèse vocale ont échoué."
         });
       }
     });
 
   // Image Generation API
   app.post("/api/generate-image", async (req, res) => {
-    const { prompt, engine } = req.body;
+    const { prompt, engine: preferredEngine } = req.body;
     if (!prompt) {
       return res.status(400).json({ error: "Le prompt est requis." });
     }
 
     try {
-      if (engine === "gemini") {
-        const client = getGeminiClient();
-        const modelsToTry = [
-          { name: "gemini-3.1-flash-image", type: "native" },
-          { name: "gemini-2.5-flash-image", type: "native" },
-          { name: "imagen-4.0-generate-001", type: "imagen" }
-        ];
-        
-        let lastError = null;
-        for (const modelInfo of modelsToTry) {
+      const enginesToTry = [];
+      if (preferredEngine === "gemini") enginesToTry.push("gemini", "cloudflare", "pollinations");
+      else if (preferredEngine === "cloudflare") enginesToTry.push("cloudflare", "pollinations", "gemini");
+      else enginesToTry.push("pollinations", "cloudflare", "gemini");
+
+      let lastError: any = null;
+
+      for (const engine of enginesToTry) {
+        if (engine === "gemini") {
           try {
-            if (modelInfo.type === "imagen") {
-              const apiRes = await client.models.generateImages({
-                model: modelInfo.name,
-                prompt: prompt,
-                config: {
-                  numberOfImages: 1,
-                  outputMimeType: "image/jpeg",
-                  aspectRatio: "1:1",
-                },
-              });
-              
-              if (apiRes.generatedImages && apiRes.generatedImages[0]) {
-                const base64Bytes = apiRes.generatedImages[0].image.imageBytes;
-                return res.json({ 
-                  imageUrl: `data:image/jpeg;base64,${base64Bytes}`, 
-                  provider: `Cephboy AI (Visuel)` 
+            const client = getGeminiClient();
+            const modelsToTry = [
+              { name: "gemini-3.1-flash-image", type: "native" },
+              { name: "gemini-2.5-flash-image", type: "native" },
+              { name: "imagen-4.0-generate-001", type: "imagen" }
+            ];
+            
+            for (const modelInfo of modelsToTry) {
+              try {
+                console.log(`[Gemini Image] Attempting model: ${modelInfo.name}`);
+                const response = await client.models.generateContent({
+                  model: modelInfo.name,
+                  contents: [{ parts: [{ text: prompt }] }]
                 });
-              }
-              throw new Error("No image generated");
-            } else {
-              const response = await client.models.generateContent({
-                model: modelInfo.name,
-                contents: [{ parts: [{ text: `Generate a high-quality image based on this prompt: ${prompt}` }] }],
-                config: {
-                  imageConfig: {
-                    aspectRatio: "1:1",
-                    imageSize: "1K"
+                
+                const parts = response.candidates?.[0]?.content?.parts || [];
+                for (const part of parts) {
+                  if (part.inlineData && part.inlineData.data) {
+                    const mime = part.inlineData.mimeType || "image/png";
+                    return res.json({ 
+                      imageUrl: `data:${mime};base64,${part.inlineData.data}`, 
+                      provider: `Cephboy AI (Visuel - ${modelInfo.name})` 
+                    });
                   }
                 }
-              });
-              const parts = response.candidates?.[0]?.content?.parts || [];
-              for (const part of parts) {
-                if (part.inlineData && part.inlineData.data) {
-                  const mime = part.inlineData.mimeType || "image/png";
-                  return res.json({ 
-                    imageUrl: `data:${mime};base64,${part.inlineData.data}`, 
-                    provider: `Cephboy AI (Visuel)` 
-                  });
-                }
+              } catch (e: any) {
+                console.warn(`Gemini ${modelInfo.name} failed:`, e.message);
+                lastError = e;
               }
-              throw new Error("No inline image data found");
             }
-          } catch (err: any) {
-            console.error(`Gemini image generation failed with ${modelInfo.name}:`, err.message || err);
-            lastError = err;
+            // If we got here, Gemini failed entirely
+          } catch (e: any) {
+             lastError = e;
           }
-        }
-        throw lastError || new Error("Échec de la génération d'image avec Gemini.");
-      } else if (engine === "pixelapi") {
-        const url = "https://api.pixelapi.dev/v1/image/generate";
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (process.env.PIXELAPI_KEY) {
-          headers["Authorization"] = `Bearer ${process.env.PIXELAPI_KEY}`;
-        }
-        
-        const apiRes = await fetchWithTimeout(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ prompt })
-        }, 30000);
-
-        if (apiRes.ok) {
-          const contentType = apiRes.headers.get("content-type") || "";
-          if (contentType.includes("application/json")) {
-            const data = await apiRes.json();
-            const imageUrl = data.url || data.imageUrl || data.image || data.result;
-            if (imageUrl) {
-              return res.json({ imageUrl, provider: "PixelAPI" });
+        } else if (engine === "cloudflare") {
+          if (!process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID) {
+            continue;
+          }
+          const models = [
+            "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+            "@cf/lykon/dreamshaper-8-lcm"
+          ];
+          for (const model of models) {
+            try {
+              console.log(`[Cloudflare Image] Attempting model: ${model}`);
+              const response = await callCloudflareWorkersAI(model, { prompt });
+              const arrayBuffer = await response.arrayBuffer();
+              const base64 = Buffer.from(arrayBuffer).toString("base64");
+              return res.json({ 
+                imageUrl: `data:image/png;base64,${base64}`, 
+                provider: `Workers AI (${model.split('/').pop()})` 
+              });
+            } catch (err: any) {
+              console.warn(`Cloudflare ${model} failed:`, err.message);
+              lastError = err;
             }
-          } else if (contentType.includes("image")) {
-            const arrayBuffer = await apiRes.arrayBuffer();
-            const base64 = Buffer.from(arrayBuffer).toString("base64");
-            return res.json({ imageUrl: `data:${contentType};base64,${base64}`, provider: "PixelAPI" });
           }
-        }
-        
-        let errorMessage = `PixelAPI a échoué avec le statut ${apiRes.status}`;
-        try {
-          const errorData = await apiRes.json();
-          errorMessage = errorData.error || errorData.message || errorMessage;
-        } catch (e) {}
-        throw new Error(errorMessage);
-      } else if (engine === "cloudflare") {
-        let lastError = null;
-        const models = [
-          "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-          "@cf/lykon/dreamshaper-8-lcm"
-        ];
-        for (const model of models) {
+        } else if (engine === "pollinations") {
           try {
-            const response = await callCloudflareWorkersAI(model, { prompt });
-            const arrayBuffer = await response.arrayBuffer();
-            const base64 = Buffer.from(arrayBuffer).toString("base64");
-            return res.json({ 
-              imageUrl: `data:image/png;base64,${base64}`, 
-              provider: `Workers AI (${model.split('/').pop()})` 
-            });
-          } catch (err: any) {
-            console.error(`Cloudflare image generation with ${model} failed:`, err.message || err);
-            lastError = err;
+            console.log("[Image] Attempting Pollinations AI...");
+            const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&private=true`;
+            const headers: Record<string, string> = {};
+            if (process.env.POLLINATIONS_API_KEY) {
+              headers["Authorization"] = `Bearer ${process.env.POLLINATIONS_API_KEY}`;
+            }
+            
+            const apiRes = await fetchWithTimeout(url, { headers }, 30000);
+            if (apiRes.ok) {
+              const arrayBuffer = await apiRes.arrayBuffer();
+              const base64 = Buffer.from(arrayBuffer).toString("base64");
+              const contentType = apiRes.headers.get("content-type") || "image/png";
+              return res.json({ imageUrl: `data:${contentType};base64,${base64}`, provider: "Pollinations AI" });
+            } else {
+              lastError = new Error(`Pollinations failed with status: ${apiRes.status}`);
+            }
+          } catch (e: any) {
+             console.warn("Pollinations failed:", e.message);
+             lastError = e;
           }
         }
-        throw lastError || new Error("Échec de la génération d'image avec Cloudflare Workers AI.");
-      } else {
-        // Default to pollinations
-        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&private=true`;
-        const headers: Record<string, string> = {};
-        if (process.env.POLLINATIONS_API_KEY) {
-          headers["Authorization"] = `Bearer ${process.env.POLLINATIONS_API_KEY}`;
-        }
-        
-        const apiRes = await fetchWithTimeout(url, { headers }, 15000);
-        if (apiRes.ok) {
-          const arrayBuffer = await apiRes.arrayBuffer();
-          const base64 = Buffer.from(arrayBuffer).toString("base64");
-          const contentType = apiRes.headers.get("content-type") || "image/png";
-          return res.json({ imageUrl: `data:${contentType};base64,${base64}`, provider: "Pollinations AI" });
-        }
-        throw new Error("Échec de la génération d'image avec Pollinations.");
       }
+
+      throw lastError || new Error("Tous les générateurs d'images ont échoué. Vérifiez vos clés API ou réessayez.");
     } catch (err: any) {
       console.error("Image generation error:", err);
       return res.status(500).json({ error: err.message || "Erreur lors de la génération de l'image." });
@@ -941,16 +898,28 @@ app.use(express.static(path.join(process.cwd(), "public")));
 
       try {
         const client = getGeminiClient();
-        const geminiRes = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: [{ parts: [{ text: `You are an expert storyboard artist. Expand this video prompt: "${prompt}" into 4 consecutive descriptive prompts in French for image generation to form a coherent 4-second video sequence/slideshow. Respond ONLY with a valid JSON array containing 4 string elements. Do not include any markdown or prefix. Example format: ["scène 1", "scène 2", "scène 3", "scène 4"]` }] }]
-        });
-        const text = geminiRes.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          const cleanText = text.replace(/```json|```/g, "").trim();
-          const parsed = JSON.parse(cleanText);
-          if (Array.isArray(parsed) && parsed.length === 4) {
-            framePrompts = parsed;
+        const models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"];
+        for (const model of models) {
+          try {
+            const geminiRes = await client.models.generateContent({
+              model: model,
+              contents: [{ parts: [{ text: `You are an expert cinematic storyboard artist. Expand this video prompt: "${prompt}" into 4 consecutive, highly descriptive visual prompts in French for AI image generation to form a coherent, high-quality 4-second video sequence. Respond ONLY with a valid JSON array containing 4 string elements. Do not include any markdown or prefix. Example format: ["scène 1", "scène 2", "scène 3", "scène 4"]` }] }]
+            });
+            const text = geminiRes.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              const match = text.match(/\[.*\]/s);
+              const cleanText = match ? match[0] : text.replace(/```json|```/g, "").trim();
+              const parsed = JSON.parse(cleanText);
+              if (Array.isArray(parsed) && parsed.length === 4) {
+                framePrompts = parsed;
+                break;
+              }
+            }
+          } catch (e: any) {
+            console.warn(`Storyboard failed with ${model}:`, e.message);
+            if (e.message.includes("429") || e.status === 429) {
+                await new Promise(resolve => setTimeout(resolve, 10000));
+            }
           }
         }
       } catch (e) {
@@ -959,7 +928,10 @@ app.use(express.static(path.join(process.cwd(), "public")));
 
       // Generate 4 images in parallel
       const imagePromises = framePrompts.map(async (framePrompt) => {
-        if (engine === "cloudflare" && process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
+        let lastError: any = null;
+        
+        // Try Cloudflare first if selected or if others fail
+        if ((engine === "cloudflare" || engine === "gemini") && process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
           try {
             // Lykon Dreamshaper is incredibly fast and optimal for storyboarding
             const apiRes = await callCloudflareWorkersAI("@cf/lykon/dreamshaper-8-lcm", { prompt: framePrompt });
@@ -968,6 +940,7 @@ app.use(express.static(path.join(process.cwd(), "public")));
             return `data:image/png;base64,${base64}`;
           } catch (err: any) {
             console.error("Cloudflare video frame generation failed, falling back to Pollinations:", err.message || err);
+            lastError = err;
           }
         }
         
@@ -977,13 +950,17 @@ app.use(express.static(path.join(process.cwd(), "public")));
         if (process.env.POLLINATIONS_API_KEY) {
           pollinationsHeaders["Authorization"] = `Bearer ${process.env.POLLINATIONS_API_KEY}`;
         }
-        const apiRes = await fetchWithTimeout(url, { headers: pollinationsHeaders }, 25000);
-        if (apiRes.ok) {
-          const arrayBuffer = await apiRes.arrayBuffer();
-          const base64 = Buffer.from(arrayBuffer).toString("base64");
-          return `data:image/png;base64,${base64}`;
+        try {
+          const apiRes = await fetchWithTimeout(url, { headers: pollinationsHeaders }, 30000);
+          if (apiRes.ok) {
+            const arrayBuffer = await apiRes.arrayBuffer();
+            const base64 = Buffer.from(arrayBuffer).toString("base64");
+            return `data:image/png;base64,${base64}`;
+          }
+          throw new Error(`Erreur Pollinations HTTP ${apiRes.status}`);
+        } catch (e: any) {
+          throw new Error(`Échec de la génération d'un des plans: ${e.message}. Précédente erreur: ${lastError?.message || 'Aucune'}`);
         }
-        throw new Error("Échec de la génération d'un des plans de la séquence vidéo.");
       });
 
       const imageUrls = await Promise.all(imagePromises);
@@ -1038,6 +1015,7 @@ If you use web search results, cite them appropriately.`;
       { modelId: "gemini-3.5-flash", displayName: "Cephboy AI" },
       { modelId: "gemini-3.1-flash-lite", displayName: "Cephboy AI Lite" },
       { modelId: "gemini-3.1-pro-preview", displayName: "Cephboy AI Pro" },
+      { modelId: "gemini-flash-latest", displayName: "Cephboy AI Classic" },
     ];
 
     const hasCloudflare = !!(process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID);
@@ -1052,6 +1030,56 @@ If you use web search results, cite them appropriately.`;
     const lastUserMessage = [...messages].reverse().find(m => m.role === "user")?.content || "";
     const isAnalysisOrCreation = /créer|analyse|analyser|créé|création|dossier|fichier|pdf|doc|xls|csv/i.test(lastUserMessage) || lastUserMessage.length > 250;
     const isGreeting = /salut|bonjour|hello|hi|coucou|hey|hola/i.test(lastUserMessage) && lastUserMessage.length < 25;
+    
+    // Check if user is explicitly asking for image or video generation
+    const isVideoReq = /(vidéo|video|anime|animer)/i.test(lastUserMessage) && /(génère|génere|générer|crée|créer|fais)/i.test(lastUserMessage);
+    const isImageReq = !isVideoReq && /(image|photo|dessin|illustra|portrait)/i.test(lastUserMessage) && /(génère|génere|générer|crée|créer|fais)/i.test(lastUserMessage);
+
+    if (isVideoReq) {
+      res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI (Vidéo)" })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "status", message: "Génération de la séquence vidéo en cours..." })}\n\n`);
+      try {
+        const fetchRes = await fetch("http://127.0.0.1:3000/api/generate-video", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: lastUserMessage, engine: 'cloudflare' })
+        });
+        const data = await fetchRes.json();
+        if (data.frames) {
+          res.write(`data: ${JSON.stringify({ type: "media", videoFrames: data.frames })}\n\n`);
+          res.end();
+          return;
+        } else {
+          throw new Error(data.error || "Échec de génération vidéo.");
+        }
+      } catch (e: any) {
+        res.write(`data: ${JSON.stringify({ type: "error", error: e.message })}\n\n`);
+        res.end();
+        return;
+      }
+    } else if (isImageReq) {
+      res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI (Image)" })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "status", message: "Génération de l'image en cours..." })}\n\n`);
+      try {
+        const fetchRes = await fetch("http://127.0.0.1:3000/api/generate-image", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: lastUserMessage, engine: 'cloudflare' })
+        });
+        const data = await fetchRes.json();
+        if (data.imageUrl) {
+          res.write(`data: ${JSON.stringify({ type: "media", imageUrl: data.imageUrl })}\n\n`);
+          res.end();
+          return;
+        } else {
+          throw new Error(data.error || "Échec de génération d'image.");
+        }
+      } catch (e: any) {
+        res.write(`data: ${JSON.stringify({ type: "error", error: e.message })}\n\n`);
+        res.end();
+        return;
+      }
+    }
 
     // Default to 'duo' if not specified
     let activeMode = selectedModel || 'duo';
@@ -1290,33 +1318,39 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
     });
   });
 
-// 3. Start the Server (only if running locally)
+// 3. Start the Server
 async function startServer() {
-  // Vite/Static middleware
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
+    // Standard production mode (not Vercel)
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
   }
 
-  const PORT = 3000;
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Cephboy AI GPT server running on http://0.0.0.0:${PORT}`);
-  });
+  // Bind to port 3000 only if NOT on Vercel
+  if (!process.env.VERCEL) {
+    const PORT = Number(process.env.PORT) || 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Cephboy AI GPT server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
-if (!process.env.VERCEL) {
-  startServer().catch(err => {
-    console.error("CRITICAL: Server failed to start:", err);
-    process.exit(1);
-  });
-}
+// Only run startServer if we are the main module or not on Vercel
+// Vercel handles the app via the export
+startServer().catch(err => {
+  console.error("Initialization failed:", err);
+});
+
+export default app;

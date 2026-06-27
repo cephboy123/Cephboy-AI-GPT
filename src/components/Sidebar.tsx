@@ -8,6 +8,7 @@ import {
   doc, 
   deleteDoc, 
   setDoc,
+  where,
   handleFirestoreError,
   OperationType
 } from './firebase';
@@ -38,6 +39,8 @@ interface SidebarProps {
   onLanguageChange: (lang: Language) => void;
   onOpenSettings: () => void;
   logoVersion?: number;
+  userId: string | null;
+  authError?: boolean;
 }
 
 export default function Sidebar({
@@ -49,12 +52,15 @@ export default function Sidebar({
   language,
   onLanguageChange,
   onOpenSettings,
-  logoVersion = Date.now()
+  logoVersion = Date.now(),
+  userId,
+  authError
 }: SidebarProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isCheckingProviders, setIsCheckingProviders] = useState(false);
+  const [providerError, setProviderError] = useState<string | null>(null);
   const [isLangMenuOpen, setIsLangMenuOpen] = useState(false);
 
   const t = translations[language];
@@ -62,21 +68,33 @@ export default function Sidebar({
 
   // 1. Subscribe to conversations in Firestore
   useEffect(() => {
-    const q = query(collection(db, 'conversations'), orderBy('updatedAt', 'desc'));
+    if (!userId) return;
+    
+    // Query only by userId to avoid needing a composite index for orderBy
+    const q = query(
+      collection(db, 'conversations'), 
+      where('userId', '==', userId)
+    );
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      console.log(`Firestore: Received snapshot for userId ${userId}. Docs count: ${snapshot.size}`);
       const list: Conversation[] = [];
       snapshot.forEach((docSnapshot) => {
+        console.log(`Firestore: Found doc ${docSnapshot.id}`);
         list.push({ id: docSnapshot.id, ...docSnapshot.data() } as Conversation);
       });
+      
+      // Sort in-memory to avoid needing a composite index
+      list.sort((a, b) => b.updatedAt - a.updatedAt);
+      
       setConversations(list);
     }, (error) => {
       console.error("Firestore loading error:", error);
-      handleFirestoreError(error, OperationType.LIST, 'conversations');
+      // Optional: handleFirestoreError(error, OperationType.LIST, 'conversations');
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [userId]);
 
   // 2. Poll providers status
   const checkProvidersStatus = async () => {
@@ -86,9 +104,13 @@ export default function Sidebar({
       if (res.ok) {
         const data = await res.json();
         setProviders(data);
+        setProviderError(null);
+      } else {
+        throw new Error(`Server returned ${res.status}`);
       }
-    } catch (e) {
-      console.error("Failed to check provider statuses", e);
+    } catch (e: any) {
+      console.error("Failed to check provider statuses:", e);
+      setProviderError(e.message);
     } finally {
       setIsCheckingProviders(false);
     }
@@ -144,8 +166,10 @@ export default function Sidebar({
                 {t.appName}
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider">{t.online}</span>
+                <div className={`w-1.5 h-1.5 ${authError ? 'bg-orange-500' : 'bg-green-500'} rounded-full ${authError ? '' : 'animate-pulse'}`} />
+                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider">
+                  {authError ? (language === 'fr' ? 'Mode Local' : 'Local Mode') : t.online}
+                </span>
               </div>
             </div>
           </div>

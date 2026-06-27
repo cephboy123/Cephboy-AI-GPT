@@ -4,6 +4,7 @@ import ChatArea from './components/ChatArea';
 import SettingsModal from './components/SettingsModal';
 import { translations, Language } from './translations';
 import { Conversation, Message, Citation } from './components/types';
+import { Cpu, X, Check, Search, ExternalLink, Activity, Zap, RefreshCw } from 'lucide-react';
 import { 
   db, 
   collection, 
@@ -11,12 +12,22 @@ import {
   setDoc, 
   getDoc,
   deleteDoc,
+  auth,
+  signInAnonymously,
+  onAuthStateChanged,
   handleFirestoreError,
-  OperationType
+  OperationType,
+  firebaseConfig,
+  query,
+  where,
+  getDocs
 } from './components/firebase';
 
 export default function App() {
-  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authErrorCode, setAuthErrorCode] = useState<string | null>(null);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(() => localStorage.getItem('cephboy-current-conv-id'));
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentProvider, setCurrentProvider] = useState<string>('');
@@ -50,10 +61,120 @@ export default function App() {
 
   const t = translations[language];
 
+  const [isRetryingAuth, setIsRetryingAuth] = useState(false);
+
+  const migrateConversations = async (oldId: string, newId: string) => {
+    if (!oldId || !newId || oldId === newId) return;
+    try {
+      const q = query(collection(db, "conversations"), where("userId", "==", oldId));
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) {
+        localStorage.removeItem('cephboy-local-session-id');
+        return;
+      }
+      
+      console.log(`Migration: Found ${snapshot.size} conversations to migrate from ${oldId} to ${newId}`);
+      
+      for (const d of snapshot.docs) {
+        await setDoc(doc(db, "conversations", d.id), { userId: newId }, { merge: true });
+        console.log(`Migration: Migrated doc ${d.id}`);
+      }
+      
+      localStorage.removeItem('cephboy-local-session-id');
+      console.log("Migration: Completed successfully");
+    } catch (e) {
+      console.error("Migration failed:", e);
+    }
+  };
+
+  // 0. Handle Authentication
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        console.log("Auth: Authenticated as", user.uid);
+        setUserId(user.uid);
+        setAuthError(null);
+        setIsRetryingAuth(false);
+
+        // Try to migrate local conversations if they exist
+        const localId = localStorage.getItem('cephboy-local-session-id');
+        if (localId && localId !== user.uid) {
+          migrateConversations(localId, user.uid);
+        }
+      } else {
+        console.log("Auth: Not authenticated, attempting anonymous sign-in...");
+        signInAnonymously(auth).catch((err) => {
+          console.error("Auth: Anonymous sign-in failed:", err.message);
+          
+          let localId = localStorage.getItem('cephboy-local-session-id');
+          if (!localId) {
+            localId = 'anon_' + Math.random().toString(36).substring(2, 15);
+            localStorage.setItem('cephboy-local-session-id', localId);
+          }
+          setUserId(localId);
+          setIsRetryingAuth(false);
+
+          if (err.code === 'auth/admin-restricted-operation' || err.code === 'auth/operation-not-allowed') {
+            const isFr = language === 'fr';
+            setAuthError(isFr 
+              ? "L'authentification anonyme est désactivée. Vous DEVEZ l'activer dans la console Firebase (Onglet Authentification)." 
+              : "Anonymous authentication is disabled. You MUST enable it in the Firebase Console (Authentication tab).");
+          }
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, [language]);
+
+  const performAuthRetry = async () => {
+    setIsRetryingAuth(true);
+    setAuthError(null);
+    setAuthErrorCode(null);
+    try {
+      console.log("Auth: Retrying sign-in...");
+      await signInAnonymously(auth);
+      // onAuthStateChanged will handle the rest
+      console.log("Auth: Sign-in command sent successfully");
+    } catch (err: any) {
+      console.error("Auth: Manual retry failed:", err.code, err.message);
+      setAuthErrorCode(err.code);
+      if (err.code === 'auth/admin-restricted-operation' || err.code === 'auth/operation-not-allowed') {
+        const isFr = language === 'fr';
+        setAuthError(isFr 
+          ? "L'authentification anonyme est désactivée. Activez-la dans votre console Firebase." 
+          : "Anonymous authentication is disabled. Enable it in your Firebase console.");
+      } else {
+        setAuthError(err.message);
+      }
+    } finally {
+      setIsRetryingAuth(false);
+    }
+  };
+
+  // Passive auto-retry when error is present
+  useEffect(() => {
+    if (authError && !isRetryingAuth) {
+      const interval = setInterval(() => {
+        console.log("Auth: Passive auto-retry...");
+        signInAnonymously(auth).catch(() => {});
+      }, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [authError, isRetryingAuth]);
+
   // Persist language
   useEffect(() => {
     localStorage.setItem('app-language', language);
   }, [language]);
+
+  // Persist current conversation ID
+  useEffect(() => {
+    if (currentConversationId) {
+      localStorage.setItem('cephboy-current-conv-id', currentConversationId);
+    } else {
+      localStorage.removeItem('cephboy-current-conv-id');
+    }
+  }, [currentConversationId]);
 
   const handleLanguageChange = (newLang: Language) => {
     localStorage.setItem('app-language', newLang);
@@ -93,9 +214,14 @@ export default function App() {
           // If conversation deleted or doesn't exist
           setCurrentConversationId(null);
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error fetching conversation details:", err);
-        handleFirestoreError(err, OperationType.GET, `conversations/${currentConversationId}`);
+        // If it's a permission error, it might be due to user switching or stale ID
+        if (err.code === 'permission-denied') {
+          setCurrentConversationId(null);
+        } else {
+          handleFirestoreError(err, OperationType.GET, `conversations/${currentConversationId}`);
+        }
       }
     };
 
@@ -104,9 +230,11 @@ export default function App() {
 
   // Create a brand new conversation in Firestore
   const handleCreateNewConversation = async () => {
+    if (!userId) return;
     const newId = `chat_${Date.now()}`;
     const newChat: Conversation = {
       id: newId,
+      userId: userId,
       title: "Nouvelle conversation",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -128,9 +256,11 @@ export default function App() {
     
     // Create new conversation automatically if none is selected
     if (!activeId) {
+      if (!userId) return;
       activeId = `chat_${Date.now()}`;
       const newChat: Conversation = {
         id: activeId,
+        userId: userId,
         title: imageEngine === 'video'
           ? `Vidéo: ${content.slice(0, 25)}...`
           : imageEngine 
@@ -313,6 +443,7 @@ export default function App() {
           throw new Error("Aucune image n'a pu être générée.");
         }
         
+        // Finish image generation
         const finalMsg: Message = {
           id: assistantMsgId,
           role: 'assistant',
@@ -325,6 +456,7 @@ export default function App() {
         const finalMessages = [...updatedMessages, finalMsg];
         const finalConv: Conversation = {
           ...updatedConv,
+          userId: userId || undefined,
           messages: finalMessages,
           updatedAt: Date.now()
         };
@@ -371,6 +503,7 @@ export default function App() {
     // Optimistically update local view
     const updatedConv: Conversation = {
       id: activeId,
+      userId: userId || undefined,
       title: conversation?.title === "Nouvelle conversation" || !conversation 
         ? content.slice(0, 35) + (content.length > 35 ? "..." : "") 
         : conversation.title,
@@ -394,6 +527,8 @@ export default function App() {
 
     const assistantMsgId = `msg_${Date.now()}_assistant`;
     let assistantCitations: Citation[] = [];
+    let assistantImageUrl: string | undefined = undefined;
+    let assistantVideoFrames: string[] | undefined = undefined;
 
     // Now start the SSE call to Express backend
     try {
@@ -411,12 +546,16 @@ export default function App() {
       });
 
       if (!response.ok) {
-        let errorMessage = "Erreur de connexion avec le serveur.";
+        let errorMessage = `Erreur serveur (${response.status}): Impossible de joindre Cephboy.`;
         try {
           const errData = await response.json();
           errorMessage = errData.error || errorMessage;
         } catch (e) {
-          // Not JSON
+          // Si ce n'est pas du JSON, essayons de lire le texte
+          try {
+            const text = await response.text();
+            if (text && text.length < 200) errorMessage += ` Détails : ${text}`;
+          } catch (e2) {}
         }
         throw new Error(errorMessage);
       }
@@ -452,6 +591,15 @@ export default function App() {
               } else if (payload.type === 'provider') {
                 detectedProvider = payload.provider;
                 setCurrentProvider(payload.provider);
+              } else if (payload.type === 'media') {
+                if (payload.imageUrl) {
+                  assistantImageUrl = payload.imageUrl;
+                  if (!assistantContent) assistantContent = `Voici l'image générée avec succès !`;
+                }
+                if (payload.videoFrames) {
+                  assistantVideoFrames = payload.videoFrames;
+                  if (!assistantContent) assistantContent = `Voici la séquence vidéo générée avec succès !`;
+                }
               } else if (payload.type === 'citations') {
                 assistantCitations = payload.citations;
               } else if (payload.type === 'content') {
@@ -472,6 +620,8 @@ export default function App() {
                     timestamp: Date.now(),
                     citations: assistantCitations,
                     providerUsed: detectedProvider,
+                    ...(assistantImageUrl && { imageUrl: assistantImageUrl }),
+                    ...(assistantVideoFrames && { videoFrames: assistantVideoFrames }),
                     isStreaming: true
                   };
 
@@ -498,6 +648,8 @@ export default function App() {
         content: assistantContent || "Désolé, je n'ai pas pu générer de réponse.",
         timestamp: Date.now(),
         citations: assistantCitations,
+        ...(assistantImageUrl && { imageUrl: assistantImageUrl }),
+        ...(assistantVideoFrames && { videoFrames: assistantVideoFrames }),
         providerUsed: detectedProvider
       };
 
@@ -714,8 +866,95 @@ export default function App() {
         onLanguageChange={handleLanguageChange}
         onOpenSettings={() => setIsSettingsOpen(true)}
         logoVersion={logoVersion}
+        userId={userId}
+        authError={!!authError}
       />
-      <ChatArea
+      <div className="flex-1 flex flex-col min-w-0 bg-[#09090b] relative">
+        {authError && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] w-[95%] max-w-2xl bg-slate-950/95 border-2 border-orange-500/50 backdrop-blur-3xl rounded-3xl p-6 flex flex-col items-stretch gap-6 shadow-[0_0_100px_-12px_rgba(249,115,22,0.5)] animate-in fade-in zoom-in-95 duration-300">
+            <div className="flex items-start gap-6">
+              <div className="bg-orange-500 p-4 rounded-2xl shadow-2xl shadow-orange-500/40 shrink-0">
+                <Cpu className="w-8 h-8 text-white animate-pulse" />
+              </div>
+              <div className="space-y-3 flex-1">
+                <p className="text-lg font-bold text-orange-200 tracking-tight">Configuration Firebase Requise</p>
+                <div className="space-y-3 text-sm text-orange-100/80 leading-relaxed">
+                  <p className="font-medium">L'authentification anonyme est actuellement <span className="text-orange-400 font-bold uppercase underline">désactivée</span> dans votre projet.</p>
+                  <div className="bg-orange-500/10 border border-orange-500/20 p-4 rounded-2xl space-y-2 shadow-inner">
+                    <p className="font-bold text-orange-300 flex items-center gap-2">
+                      <Check className="w-4 h-4" /> Solution immédiate :
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1.5 ml-1 opacity-90 font-medium">
+                      <li>Ouvrez la <strong>Console Firebase</strong></li>
+                      <li>Allez dans l'onglet <strong className="text-orange-300 underline">Authentification</strong> (pas Firestore)</li>
+                      <li>Cliquez sur <strong>Sign-in method</strong></li>
+                      <li>Activez le fournisseur <strong className="text-orange-300 underline">Anonyme</strong></li>
+                    </ol>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-4 pt-2">
+                   <button onClick={() => setIsSettingsOpen(true)} className="text-xs text-sky-400 hover:text-sky-300 underline font-semibold cursor-pointer flex items-center gap-1.5 py-1">
+                     <Search className="w-4 h-4" /> Voir les diagnostics avancés
+                   </button>
+                   <a 
+                    href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-orange-400 hover:text-orange-300 underline font-semibold flex items-center gap-1.5 py-1"
+                   >
+                     <ExternalLink className="w-4 h-4" /> Accès direct Authentification
+                   </a>
+                </div>
+              </div>
+              <button onClick={() => setAuthError(null)} className="p-2 hover:bg-white/10 rounded-2xl text-slate-500 transition-colors cursor-pointer shrink-0">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <button 
+                onClick={() => performAuthRetry()} 
+                disabled={isRetryingAuth}
+                className="w-full bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white py-4 rounded-2xl text-base font-black transition-all shadow-xl shadow-orange-600/30 flex items-center justify-center gap-3 cursor-pointer transform active:scale-95"
+              >
+                {isRetryingAuth ? (
+                  <>
+                    <Activity className="w-5 h-5 animate-spin" />
+                    Tentative de reconnexion...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-5 h-5" />
+                    Réessayer la synchronisation
+                  </>
+                )}
+              </button>
+
+              <div className="grid grid-cols-2 gap-3">
+                <button 
+                  onClick={() => setAuthError(null)} 
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer border border-white/5"
+                >
+                  Continuer en local
+                </button>
+                <button 
+                  onClick={() => window.location.reload()} 
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer border border-white/5"
+                >
+                  Actualiser
+                </button>
+              </div>
+            </div>
+            
+            {authErrorCode && (
+              <div className="pt-4 border-t border-white/5 flex flex-col items-center">
+                <span className="text-[10px] text-slate-500 uppercase tracking-widest font-mono">Code d'erreur</span>
+                <span className="text-xs text-orange-400 font-mono mt-1 font-bold">{authErrorCode}</span>
+              </div>
+            )}
+          </div>
+        )}
+        <ChatArea
         conversation={conversation}
         onSendMessage={handleSendMessage}
         onUploadFile={handleUploadFile}
@@ -740,6 +979,7 @@ export default function App() {
         selectedModel={selectedModel}
         onSelectedModelChange={handleSetSelectedModel}
       />
+      </div>
       {isSettingsOpen && (
         <SettingsModal 
           isOpen={isSettingsOpen} 
@@ -758,6 +998,8 @@ export default function App() {
           setPreferCloudflare={handleSetPreferCloudflare}
           selectedModel={selectedModel}
           onSelectedModelChange={handleSetSelectedModel}
+          userId={userId}
+          projectId={firebaseConfig.projectId}
         />
       )}
     </div>

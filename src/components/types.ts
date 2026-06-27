@@ -22,6 +22,7 @@ export interface Message {
 export interface Conversation {
   id: string;
   title: string;
+  userId?: string;
   createdAt: number;
   updatedAt: number;
   messages: Message[];

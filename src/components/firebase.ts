@@ -9,11 +9,14 @@ import {
   deleteDoc, 
   onSnapshot, 
   query, 
-  orderBy 
+  orderBy,
+  where,
+  updateDoc
 } from 'firebase/firestore';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 
 // Configuration injected dynamically or hardcoded from firebase-applet-config.json
-const firebaseConfig = {
+export const firebaseConfig = {
   projectId: "flutter-ai-playground-c9906",
   appId: "1:271345228299:web:828c3c2b107590ded9c50e",
   apiKey: "AIzaSyAJJSHKlzoBSEZBziuLInUEeXmJEchl8Pg",
@@ -27,6 +30,7 @@ const app = initializeApp(firebaseConfig);
 
 // Critical: Use the custom database ID provided in the configuration
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const auth = getAuth(app);
 
 export enum OperationType {
   CREATE = 'create',
@@ -81,5 +85,9 @@ export {
   deleteDoc, 
   onSnapshot, 
   query, 
-  orderBy 
+  orderBy,
+  where,
+  updateDoc,
+  signInAnonymously,
+  onAuthStateChanged
 };

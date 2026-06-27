@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Globe, Image, Languages, Check, Search, Cpu, AlertTriangle } from 'lucide-react';
+import { X, Globe, Image, Languages, Check, Search, Cpu, AlertTriangle, ExternalLink } from 'lucide-react';
 import { translations, Language, languages } from '../translations';
 
 interface SettingsModalProps {
@@ -19,6 +19,8 @@ interface SettingsModalProps {
   setPreferCloudflare: (val: boolean) => void;
   selectedModel?: 'cephgpt1' | 'cephgpt2' | 'duo';
   onSelectedModelChange?: (val: 'cephgpt1' | 'cephgpt2' | 'duo') => void;
+  userId?: string | null;
+  projectId?: string;
 }
 
 export default function SettingsModal({
@@ -37,7 +39,9 @@ export default function SettingsModal({
   preferCloudflare,
   setPreferCloudflare,
   selectedModel = 'duo',
-  onSelectedModelChange
+  onSelectedModelChange,
+  userId,
+  projectId
 }: SettingsModalProps) {
   const t = translations[language];
 
@@ -227,6 +231,63 @@ export default function SettingsModal({
                         }`}
                       />
                     </button>
+                  </div>
+                </div>
+              </section>
+
+              {/* Diagnostic Firebase */}
+              <section className="space-y-3 pt-4 border-t border-slate-100">
+                <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  <Cpu className="w-3 h-3 text-orange-500" />
+                  Diagnostic Technique (Firebase)
+                </div>
+                <div className="bg-slate-900 rounded-xl p-4 font-mono text-[10px] text-slate-300 space-y-4 overflow-x-auto shadow-2xl border border-slate-800">
+                  
+                  {/* Auth Status Check */}
+                  <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-3 space-y-2">
+                    <span className="text-red-400 font-bold uppercase text-[9px] flex items-center gap-1.5">
+                      <X className="w-3 h-3" /> Action Requise : Authentification
+                    </span>
+                    <p className="text-slate-300 text-[10px] leading-relaxed font-sans">
+                      Vous devez activer <span className="text-orange-400 font-bold">"Anonyme"</span> dans l'onglet <span className="font-bold underline">Authentification</span> de votre console Firebase pour synchroniser vos messages.
+                    </p>
+                    <a 
+                      href={`https://console.firebase.google.com/project/${projectId}/authentication/providers`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sky-400 hover:text-sky-300 font-sans font-bold underline"
+                    >
+                      Aller à Authentification <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+
+                  <div className="space-y-1 pb-2 border-b border-slate-800">
+                    <span className="text-slate-500 block uppercase text-[9px] tracking-tight">Projet ID</span>
+                    <span className="text-orange-400 break-all select-all font-bold">{projectId || 'Inconnu'}</span>
+                  </div>
+                  
+                  <div className="space-y-1 pb-2 border-b border-slate-800">
+                    <span className="text-slate-500 block uppercase text-[9px] tracking-tight">Base de données (Firestore)</span>
+                    <span className="text-green-400 break-all select-all font-bold block">ai-studio-cephboyaigptchat-b4bda7af-1b2e-4dfc-b5c9-e6bd14a01bad</span>
+                    <p className="text-[9px] text-amber-400 mt-1 leading-tight font-sans italic bg-amber-500/5 p-2 rounded border border-amber-500/20">
+                      ⚠️ <span className="font-bold underline">IMPORTANT :</span> Dans la console Firebase, vous DEVEZ sélectionner cette base de données spécifique dans le menu déroulant en haut de la page Firestore. Si vous restez sur "(default)", vous ne verrez pas vos données.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-slate-500 block uppercase text-[9px] tracking-tight">ID Utilisateur Actuel</span>
+                    <span className="text-blue-400 break-all select-all">{userId || 'Non connecté'}</span>
+                  </div>
+
+                  <div className="pt-2 mt-2">
+                    <a 
+                      href={`https://console.firebase.google.com/project/${projectId}/firestore/databases/ai-studio-cephboyaigptchat-b4bda7af-1b2e-4dfc-b5c9-e6bd14a01bad/data`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 py-3 rounded-xl border border-sky-500/30 flex items-center justify-center gap-2 font-sans font-bold transition-all shadow-lg shadow-sky-500/10"
+                    >
+                      Ouvrir la Console Firestore <ExternalLink className="w-4 h-4" />
+                    </a>
                   </div>
                 </div>
               </section>
