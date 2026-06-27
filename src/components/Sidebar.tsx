@@ -100,17 +100,20 @@ export default function Sidebar({
   const checkProvidersStatus = async () => {
     setIsCheckingProviders(true);
     try {
+      console.log("Checking provider status...");
       const res = await fetch('/api/providers/status');
       if (res.ok) {
         const data = await res.json();
         setProviders(data);
         setProviderError(null);
       } else {
-        throw new Error(`Server returned ${res.status}`);
+        const errorText = await res.text();
+        console.error("Provider status error:", res.status, errorText);
+        throw new Error(`Server returned ${res.status}: ${errorText}`);
       }
     } catch (e: any) {
       console.error("Failed to check provider statuses:", e);
-      setProviderError(e.message);
+      setProviderError(e.message || "Failed to fetch");
     } finally {
       setIsCheckingProviders(false);
     }

@@ -216,68 +216,31 @@ export default function ChatArea({
         return;
       }
       
-      // Default to Bark for higher realism as requested by user.
-      const model = "@cf/suno/bark";
-
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-          text: cleanText,
-          model: model
-        })
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'API TTS failed');
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new window.Audio(url);
-      audioRef.current = audio;
-
-      audio.addEventListener('ended', () => {
-        setPlayingMessageId(null);
-        URL.revokeObjectURL(url);
-      });
-
-      audio.addEventListener('error', () => {
-        setPlayingMessageId(null);
-        setAudioLoadingId(null);
-        URL.revokeObjectURL(url);
-      });
-
-      await audio.play();
-      setPlayingMessageId(message.id);
-      setAudioLoadingId(null);
-    } catch (err) {
-      console.error("Cloudflare TTS error, falling back to native:", err);
+      // Use browser-native SpeechSynthesis
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang = 'fr-FR';
       
-      // Fallback to browser's SpeechSynthesis for robustness
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-        const cleanText = cleanTextForTTS(message.content);
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        utterance.lang = language === 'fr' ? 'fr-FR' : 'en-US';
-        
-        utterance.onstart = () => {
-          setAudioLoadingId(null);
-          setPlayingMessageId(message.id);
-        };
-        utterance.onend = () => setPlayingMessageId(null);
-        utterance.onerror = () => {
-          setPlayingMessageId(null);
-          setAudioLoadingId(null);
-        };
-        
-        window.speechSynthesis.speak(utterance);
-      } else {
+      utterance.onstart = () => {
+        setPlayingMessageId(message.id);
         setAudioLoadingId(null);
-      }
+      };
+      
+      utterance.onend = () => {
+        setPlayingMessageId(null);
+      };
+      
+      utterance.onerror = (e) => {
+        console.error('SpeechSynthesis error:', e);
+        setAudioLoadingId(null);
+        setPlayingMessageId(null);
+      };
+      
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.error("TTS error:", err);
+      setAudioLoadingId(null);
+      setPlayingMessageId(null);
     }
   };
 
@@ -737,7 +700,112 @@ export default function ChatArea({
       </div>
 
       {/* Input panel & controls designed in Google AI Studio style */}
-      <footer className="p-6 md:p-8 bg-gradient-to-t from-[#0a0a0a] via-[#0a0a0a] to-transparent sticky bottom-0">
+      <ChatInput 
+        onSendMessage={onSendMessage}
+        onUploadFile={onUploadFile}
+        isGenerating={isGenerating}
+        searchWeb={searchWeb}
+        setSearchWeb={setSearchWeb}
+        isImageMode={isImageMode}
+        setIsImageMode={setIsImageMode}
+        isVideoMode={isVideoMode}
+        setIsVideoMode={setIsVideoMode}
+        imageEngine={imageEngine}
+        setImageEngine={setImageEngine}
+        selectedModel={selectedModel}
+        onSelectedModelChange={onSelectedModelChange}
+        t={t}
+      />
+    </div>
+  );
+}
+
+function ChatInput({
+  onSendMessage,
+  onUploadFile,
+  isGenerating,
+  searchWeb,
+  setSearchWeb,
+  isImageMode,
+  setIsImageMode,
+  isVideoMode,
+  setIsVideoMode,
+  imageEngine,
+  setImageEngine,
+  selectedModel,
+  onSelectedModelChange,
+  t
+}: {
+  onSendMessage: ChatAreaProps['onSendMessage'];
+  onUploadFile: ChatAreaProps['onUploadFile'];
+  isGenerating: boolean;
+  searchWeb: boolean;
+  setSearchWeb: (val: boolean) => void;
+  isImageMode: boolean;
+  setIsImageMode: (val: boolean) => void;
+  isVideoMode: boolean;
+  setIsVideoMode: (val: boolean) => void;
+  imageEngine: ChatAreaProps['imageEngine'];
+  setImageEngine: ChatAreaProps['setImageEngine'];
+  selectedModel: ChatAreaProps['selectedModel'];
+  onSelectedModelChange: ChatAreaProps['onSelectedModelChange'];
+  t: any;
+}) {
+  const [inputValue, setInputValue] = useState('');
+  const [showInputParams, setShowInputParams] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFilePreview, setSelectedFilePreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isGenerating) return;
+
+    if (selectedFile) {
+      onUploadFile(selectedFile, inputValue.trim());
+      setInputValue('');
+      setSelectedFile(null);
+      setSelectedFilePreview(null);
+      return;
+    }
+
+    if (!inputValue.trim()) return;
+    
+    if (isVideoMode) {
+      onSendMessage(inputValue.trim(), false, [], 'video');
+    } else if (isImageMode) {
+      onSendMessage(inputValue.trim(), false, [], imageEngine);
+    } else {
+      onSendMessage(inputValue.trim(), searchWeb, ['duckduckgo', 'wikipedia']);
+    }
+    setInputValue('');
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setSelectedFilePreview(reader.result as string);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        setSelectedFilePreview(null);
+      }
+    }
+    // Reset input
+    e.target.value = '';
+  };
+
+  const handleCancelFile = () => {
+    setSelectedFile(null);
+    setSelectedFilePreview(null);
+  };
+
+  return (
+    <footer className="p-6 md:p-8 bg-gradient-to-t from-[#0a0a0a] via-[#0a0a0a] to-transparent sticky bottom-0">
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto space-y-4">
           
           <input 
@@ -964,6 +1032,5 @@ export default function ChatArea({
           </div>
         </form>
       </footer>
-    </div>
   );
 }

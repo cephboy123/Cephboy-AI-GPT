@@ -586,123 +586,72 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
 // API Routes
-
-  app.post("/api/save-logo", upload.single('logo'), (req, res) => {
-    console.log("Logo upload request received");
-    if (!req.file) {
-      console.log("No file in request");
-      return res.status(400).json({ error: "Aucun fichier reçu." });
+app.post("/api/save-logo", upload.single('logo'), (req, res) => {
+  console.log("Logo upload request received");
+  if (!req.file) {
+    console.log("No file in request");
+    return res.status(400).json({ error: "Aucun fichier reçu." });
+  }
+  
+  try {
+    const publicPath = path.join(process.cwd(), "public");
+    if (!fs.existsSync(publicPath)) {
+      console.log("Creating public directory at", publicPath);
+      fs.mkdirSync(publicPath, { recursive: true });
     }
     
-    try {
-      const publicPath = path.join(process.cwd(), "public");
-      if (!fs.existsSync(publicPath)) {
-        console.log("Creating public directory at", publicPath);
-        fs.mkdirSync(publicPath, { recursive: true });
-      }
+    const logoPath = path.join(publicPath, "logo.png");
+    console.log("Saving logo to", logoPath);
+    fs.writeFileSync(logoPath, req.file.buffer);
+    
+    res.json({ status: "ok", url: "/logo.png?v=" + Date.now() });
+  } catch (err: any) {
+    console.error("Error saving logo:", err);
+    res.status(500).json({ error: "Erreur lors de la sauvegarde du logo: " + err.message });
+  }
+});
+
+// Providers Health & Latency Checker
+app.get("/api/providers/status", async (req, res) => {
+  try {
+    const statusPromises = PROVIDERS.map(async (provider) => {
+      let status: 'online' | 'offline' = 'offline';
+      const startTime = Date.now();
       
-      const logoPath = path.join(publicPath, "logo.png");
-      console.log("Saving logo to", logoPath);
-      fs.writeFileSync(logoPath, req.file.buffer);
-      
-      res.json({ status: "ok", url: "/logo.png?v=" + Date.now() });
-    } catch (err: any) {
-      console.error("Error saving logo:", err);
-      res.status(500).json({ error: "Erreur lors de la sauvegarde du logo: " + err.message });
-    }
-  });
-
-  // Providers Health & Latency Checker
-  app.get("/api/providers/status", async (req, res) => {
-    try {
-      const statusPromises = PROVIDERS.map(async (provider) => {
-        let status: 'online' | 'offline' = 'offline';
-        const startTime = Date.now();
-        
-        try {
-          if (provider.name === "gemini_native") {
-            // Check if API key is present instead of pinging to save quota (which is very low in this environment)
-            if (process.env.GEMINI_API_KEY) {
-              status = 'online';
-            }
-          } else if (provider.name === "cloudflare_llama") {
-            if (process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
-              status = 'online';
-            }
-          }
-        } catch (e) {
-          status = 'offline';
-        }
-        
-        return {
-          name: provider.name,
-          displayName: provider.displayName,
-          status,
-          latency: status === 'online' ? Date.now() - startTime : 0,
-          type: provider.type
-        };
-      });
-      
-      const results = await Promise.all(statusPromises);
-      res.json(results);
-    } catch (err) {
-      console.error("Provider status check error:", err);
-      res.status(500).json({ error: "Failed to check providers" });
-    }
-  });
-
-
-    // Text-To-Speech API (using Cloudflare Workers AI)
-    app.post("/api/tts", async (req, res) => {
-      const { text, model: requestedModel = "@cf/microsoft/speecht5-tts" } = req.body;
-      if (!text) {
-        return res.status(400).json({ error: "Le texte est requis pour la synthèse vocale." });
-      }
-
-      let cleanText = text;
       try {
-        // Clean text: remove emojis and extreme characters
-        cleanText = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]/gu, '');
-        
-        const modelsToTry = [requestedModel, "@cf/suno/bark", "@cf/microsoft/speecht5-tts"];
-        let lastError: any = null;
-        let finalResponse: any = null;
-
-        for (const model of modelsToTry) {
-          try {
-            const isBark = model.includes("bark");
-            const charLimit = isBark ? 400 : 1000;
-            const finalPrompt = cleanText.substring(0, charLimit);
-            
-            console.log(`[TTS] Attempting model: ${model}`);
-            const payload = isBark ? { prompt: finalPrompt } : { text: finalPrompt };
-            
-            finalResponse = await callCloudflareWorkersAI(model, payload);
-            if (finalResponse && finalResponse.ok) break;
-          } catch (err: any) {
-            console.warn(`[TTS] Model ${model} failed:`, err.message);
-            lastError = err;
+        if (provider.name === "gemini_native") {
+          // Check if API key is present instead of pinging to save quota (which is very low in this environment)
+          if (process.env.GEMINI_API_KEY) {
+            status = 'online';
+          }
+        } else if (provider.name === "cloudflare_llama") {
+          if (process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
+            status = 'online';
           }
         }
-
-        if (!finalResponse || !finalResponse.ok) {
-          throw lastError || new Error("All TTS models failed");
-        }
-        
-        const arrayBuffer = await finalResponse.arrayBuffer();
-        res.setHeader("Content-Type", "audio/wav");
-        res.send(Buffer.from(arrayBuffer));
-      } catch (err: any) {
-        console.error("[TTS] Generation error:", err.message);
-        res.status(500).json({ 
-          error: err.message || "Erreur de génération de synthèse vocale.",
-          details: "Tous les modèles de synthèse vocale ont échoué."
-        });
+      } catch (e) {
+        status = 'offline';
       }
+      
+      return {
+        name: provider.name,
+        displayName: provider.displayName,
+        status,
+        latency: status === 'online' ? Date.now() - startTime : 0,
+        type: provider.type
+      };
     });
+    
+    const results = await Promise.all(statusPromises);
+    res.json(results);
+  } catch (err) {
+    console.error("Provider status check error:", err);
+    res.status(500).json({ error: "Failed to check providers" });
+  }
+});
 
-  // Image Generation API
-  app.post("/api/generate-image", async (req, res) => {
+// Image Generation API
+app.post("/api/generate-image", async (req, res) => {
     const { prompt, engine: preferredEngine } = req.body;
     if (!prompt) {
       return res.status(400).json({ error: "Le prompt est requis." });
@@ -1327,10 +1276,10 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else if (!process.env.VERCEL) {
-    // Standard production mode (not Vercel)
+  } else {
+    // Standard production mode
     const distPath = path.join(process.cwd(), "dist");
-    if (fs.existsSync(distPath)) {
+    if (fs.existsSync(distPath) && !process.env.VERCEL) {
       app.use(express.static(distPath));
       app.get("*", (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));
