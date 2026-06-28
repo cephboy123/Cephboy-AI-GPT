@@ -163,8 +163,8 @@ export default function VideoPlayer({ frames, prompt }: VideoPlayerProps) {
     const url = frames[currentFrame];
     if (!url) return;
     const link = document.createElement('a');
-    link.href = `/api/download-image?url=${encodeURIComponent(url)}`;
-    link.download = `cephboy_video_frame_${currentFrame + 1}_${Date.now()}.png`;
+    const filename = `cephboy_video_frame_${currentFrame + 1}`;
+    link.href = `/api/download-image?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

@@ -612,33 +612,48 @@ app.post("/api/save-logo", upload.single('logo'), (req, res) => {
 // Download image proxy to support reliable image downloads and avoid CORS/MIME issues on mobile/desktop
 app.get("/api/download-image", async (req, res) => {
   const imageUrl = req.query.url as string;
+  const customFilename = req.query.filename as string || "cephboy_image";
   if (!imageUrl) {
     return res.status(400).json({ error: "L'URL de l'image est requise." });
   }
 
   try {
+    let contentType = "image/png";
+    let buffer: Buffer;
+
     // If it's a data URL, parse and send it directly
     if (imageUrl.startsWith("data:")) {
       const parts = imageUrl.split(",");
-      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
-      const buffer = Buffer.from(parts[1], "base64");
-      res.setHeader("Content-Type", mime);
-      res.setHeader("Content-Disposition", `attachment; filename="cephboy_image_${Date.now()}.png"`);
-      return res.send(buffer);
+      contentType = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
+      buffer = Buffer.from(parts[1], "base64");
+    } else {
+      // Fetch the image from external URL
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: status ${response.status}`);
+      }
+      contentType = response.headers.get("content-type") || "image/png";
+      const arrayBuffer = await response.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
     }
 
-    // Fetch the image from external URL
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image: status ${response.status}`);
+    // Assign extension based on content-type
+    let ext = "png";
+    if (contentType.includes("jpeg") || contentType.includes("jpg")) {
+      ext = "jpg";
+    } else if (contentType.includes("webp")) {
+      ext = "webp";
+    } else if (contentType.includes("gif")) {
+      ext = "gif";
+    } else if (contentType.includes("svg")) {
+      ext = "svg";
     }
 
-    const contentType = response.headers.get("content-type") || "image/png";
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const cleanFilename = customFilename.replace(/[^a-zA-Z0-9_\-]/g, "_");
+    const finalFilename = `${cleanFilename}_${Date.now()}.${ext}`;
 
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", `attachment; filename="cephboy_image_${Date.now()}.png"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${finalFilename}"`);
     res.send(buffer);
   } catch (err: any) {
     console.error("Error in download-image proxy:", err);
