@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import SettingsModal from './components/SettingsModal';
 import { translations, Language } from './translations';
-import { Conversation, Message, Citation } from './components/types';
+import { Conversation, Message, Citation, saveConversationToLocalCache, getConversationFromLocalCache } from './components/types';
 import { Cpu, X, Check, Search, ExternalLink, Activity, Zap, RefreshCw } from 'lucide-react';
 import { 
   db, 
@@ -176,6 +176,13 @@ export default function App() {
     }
   }, [currentConversationId]);
 
+  // Keep local cache perfectly in sync with active conversation updates
+  useEffect(() => {
+    if (conversation) {
+      saveConversationToLocalCache(conversation);
+    }
+  }, [conversation]);
+
   const handleLanguageChange = (newLang: Language) => {
     localStorage.setItem('app-language', newLang);
     window.location.reload();
@@ -209,18 +216,50 @@ export default function App() {
         const docRef = doc(db, 'conversations', currentConversationId);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
-          setConversation({ id: docSnap.id, ...docSnap.data() } as Conversation);
+          const data = { id: docSnap.id, ...docSnap.data() } as Conversation;
+          setConversation(data);
+          saveConversationToLocalCache(data); // Save/refresh cache
         } else {
-          // If conversation deleted or doesn't exist
-          setCurrentConversationId(null);
+          // Check cache anyway in case we are offline and couldn't fetch but have it locally
+          const cached = getConversationFromLocalCache(currentConversationId);
+          if (cached) {
+            setConversation(cached);
+          } else {
+            // If conversation deleted or doesn't exist
+            setCurrentConversationId(null);
+          }
         }
       } catch (err: any) {
-        console.error("Error fetching conversation details:", err);
-        // If it's a permission error, it might be due to user switching or stale ID
-        if (err.code === 'permission-denied') {
+        console.warn("Error fetching conversation details from Firestore, trying cache:", err);
+        const cached = getConversationFromLocalCache(currentConversationId);
+        if (cached) {
+          console.log("Loaded conversation from local cache fallback:", cached);
+          setConversation(cached);
+        } else if (err && err.code === 'permission-denied') {
           setCurrentConversationId(null);
         } else {
-          handleFirestoreError(err, OperationType.GET, `conversations/${currentConversationId}`);
+          // Avoid throwing fatal handles if it is just a connection/offline issue
+          let errMsg = '';
+          let errCode = '';
+          if (err && typeof err === 'object') {
+            errMsg = err.message || '';
+            errCode = err.code || '';
+          } else {
+            errMsg = String(err);
+          }
+          const errStrLower = `${errMsg} ${errCode}`.toLowerCase();
+          const isOfflineOrNetwork = 
+            errStrLower.includes('offline') || 
+            errStrLower.includes('unavailable') || 
+            errStrLower.includes('could not reach') || 
+            errStrLower.includes('network') ||
+            errStrLower.includes('internet');
+
+          if (isOfflineOrNetwork) {
+            console.warn("Firestore is offline and no local cache was found for this ID.");
+          } else {
+            handleFirestoreError(err, OperationType.GET, `conversations/${currentConversationId}`);
+          }
         }
       }
     };
@@ -318,7 +357,7 @@ export default function App() {
         const response = await fetch('/api/generate-video', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: content, engine: 'cloudflare' }) // try cloudflare first
+          body: JSON.stringify({ prompt: content }) // let backend automatically use the fastest engines with robust fallback
         });
         
         if (!response.ok) {

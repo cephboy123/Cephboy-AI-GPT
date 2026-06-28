@@ -12,7 +12,7 @@ import {
   handleFirestoreError,
   OperationType
 } from './firebase';
-import { Conversation, ProviderState } from './types';
+import { Conversation, ProviderState, getCachedConversationsList, saveConversationToLocalCache } from './types';
 import { 
   MessageSquare, 
   Plus, 
@@ -70,6 +70,12 @@ export default function Sidebar({
   useEffect(() => {
     if (!userId) return;
     
+    // Load initial list from local cache immediately so we have a responsive offline experience
+    const localList = getCachedConversationsList(userId);
+    if (localList && localList.length > 0) {
+      setConversations(localList);
+    }
+    
     // Query only by userId to avoid needing a composite index for orderBy
     const q = query(
       collection(db, 'conversations'), 
@@ -80,8 +86,9 @@ export default function Sidebar({
       console.log(`Firestore: Received snapshot for userId ${userId}. Docs count: ${snapshot.size}`);
       const list: Conversation[] = [];
       snapshot.forEach((docSnapshot) => {
-        console.log(`Firestore: Found doc ${docSnapshot.id}`);
-        list.push({ id: docSnapshot.id, ...docSnapshot.data() } as Conversation);
+        const data = { id: docSnapshot.id, ...docSnapshot.data() } as Conversation;
+        list.push(data);
+        saveConversationToLocalCache(data); // update the local storage cache
       });
       
       // Sort in-memory to avoid needing a composite index
@@ -89,8 +96,7 @@ export default function Sidebar({
       
       setConversations(list);
     }, (error) => {
-      console.error("Firestore loading error:", error);
-      // Optional: handleFirestoreError(error, OperationType.LIST, 'conversations');
+      console.warn("Firestore loading error (backend may be offline), using local cache fallback:", error);
     });
 
     return () => unsubscribe();
@@ -108,11 +114,11 @@ export default function Sidebar({
         setProviderError(null);
       } else {
         const errorText = await res.text();
-        console.error("Provider status error:", res.status, errorText);
-        throw new Error(`Server returned ${res.status}: ${errorText}`);
+        console.warn("Provider status warning:", res.status, errorText);
+        setProviderError(`Server returned ${res.status}`);
       }
     } catch (e: any) {
-      console.error("Failed to check provider statuses:", e);
+      console.warn("Could not check provider statuses (backend may be offline or starting up):", e.message || e);
       setProviderError(e.message || "Failed to fetch");
     } finally {
       setIsCheckingProviders(false);

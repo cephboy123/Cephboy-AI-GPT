@@ -510,7 +510,8 @@ async function parseFile(file: Express.Multer.File): Promise<string> {
 
   try {
     if (mimetype === "application/pdf") {
-      const pdfModule: any = await import("pdf-parse");
+      const pdfPkg = "pdf-parse";
+      const pdfModule: any = await import(pdfPkg);
       const pdfParser = pdfModule.default || pdfModule;
       const data = await pdfParser(buffer);
       return data.text;
@@ -605,6 +606,43 @@ app.post("/api/save-logo", upload.single('logo'), (req, res) => {
   } catch (err: any) {
     console.error("Error saving logo:", err);
     res.status(500).json({ error: "Erreur lors de la sauvegarde du logo: " + err.message });
+  }
+});
+
+// Download image proxy to support reliable image downloads and avoid CORS/MIME issues on mobile/desktop
+app.get("/api/download-image", async (req, res) => {
+  const imageUrl = req.query.url as string;
+  if (!imageUrl) {
+    return res.status(400).json({ error: "L'URL de l'image est requise." });
+  }
+
+  try {
+    // If it's a data URL, parse and send it directly
+    if (imageUrl.startsWith("data:")) {
+      const parts = imageUrl.split(",");
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
+      const buffer = Buffer.from(parts[1], "base64");
+      res.setHeader("Content-Type", mime);
+      res.setHeader("Content-Disposition", `attachment; filename="cephboy_image_${Date.now()}.png"`);
+      return res.send(buffer);
+    }
+
+    // Fetch the image from external URL
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: status ${response.status}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "image/png";
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="cephboy_image_${Date.now()}.png"`);
+    res.send(buffer);
+  } catch (err: any) {
+    console.error("Error in download-image proxy:", err);
+    res.status(500).json({ error: "Erreur de téléchargement: " + err.message });
   }
 });
 
@@ -774,7 +812,7 @@ async function generateVideoHelper(prompt: string, engine?: string): Promise<{ f
       } catch (e: any) {
         console.warn(`Storyboard failed with ${model}:`, e.message);
         if (e.message.includes("429") || e.status === 429) {
-            await new Promise(resolve => setTimeout(resolve, 10000));
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
     }
@@ -782,47 +820,43 @@ async function generateVideoHelper(prompt: string, engine?: string): Promise<{ f
     console.warn("Failed to storyboard prompts with Gemini, using standard: ", e);
   }
 
-  // Generate 4 images in parallel
-  const imagePromises = framePrompts.map(async (framePrompt) => {
-    let lastError: any = null;
-    
-    // Try Cloudflare first if selected or if others fail
-    if ((engine === "cloudflare" || engine === "gemini") && process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID) {
-      try {
-        const apiRes = await callCloudflareWorkersAI("@cf/lykon/dreamshaper-8-lcm", { prompt: framePrompt });
-        const arrayBuffer = await apiRes.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString("base64");
-        return `data:image/png;base64,${base64}`;
-      } catch (err: any) {
-        console.error("Cloudflare video frame generation failed, falling back to Pollinations:", err.message || err);
-        lastError = err;
-      }
-    }
-    
-    // Fallback engine: Pollinations AI
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(framePrompt)}?width=1024&height=1024&nologo=true&private=true`;
-    const pollinationsHeaders: Record<string, string> = {};
-    if (process.env.POLLINATIONS_API_KEY) {
-      pollinationsHeaders["Authorization"] = `Bearer ${process.env.POLLINATIONS_API_KEY}`;
-    }
+  // Generate 4 images in parallel using the robust generateImageHelper.
+  // We default preferredEngine to "pollinations" because it generates images extremely fast (~1.5s),
+  // which is critical to avoid Vercel Serverless Function timeouts (10-second limit).
+  const preferredEngine = engine || "pollinations";
+
+  const imagePromises = framePrompts.map(async (framePrompt, index) => {
     try {
-      const apiRes = await fetchWithTimeout(url, { headers: pollinationsHeaders }, 30000);
-      if (apiRes.ok) {
-        const arrayBuffer = await apiRes.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString("base64");
-        return `data:image/png;base64,${base64}`;
-      }
-      throw new Error(`Erreur Pollinations HTTP ${apiRes.status}`);
-    } catch (e: any) {
-      throw new Error(`Échec de la génération d'un des plans: ${e.message}. Précédente erreur: ${lastError?.message || 'Aucune'}`);
+      const result = await generateImageHelper(framePrompt, preferredEngine);
+      return result.imageUrl;
+    } catch (err: any) {
+      console.error(`Frame ${index + 1} generation failed:`, err.message || err);
+      return ""; // Recover gracefully to avoid crashing the whole video
     }
   });
 
-  const imageUrls = await Promise.all(imagePromises);
+  let imageUrls = await Promise.all(imagePromises);
+
+  // Post-process: Fill in failed frames with adjacent valid frames, or a default placeholder
+  let firstValidFrame = imageUrls.find(f => f !== "");
+  if (!firstValidFrame) {
+    // Elegant fallback SVG frame if absolutely everything failed
+    firstValidFrame = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='1024' viewBox='0 0 1024 1024'><rect width='100%' height='100%' fill='%230f172a'/><text x='50%' y='50%' font-family='sans-serif' font-size='32' fill='%23f97316' text-anchor='middle'>Séquence Vidéo Indisponible</text></svg>";
+  }
+
+  imageUrls = imageUrls.map((url, index) => {
+    if (url !== "") return url;
+    // Fallback to previous frame if possible
+    for (let i = index - 1; i >= 0; i--) {
+      if (imageUrls[i] !== "") return imageUrls[i];
+    }
+    return firstValidFrame;
+  });
+
   return {
     frames: imageUrls,
     prompts: framePrompts,
-    provider: engine === "cloudflare" ? "Cloudflare Workers AI" : "Pollinations AI"
+    provider: preferredEngine === "cloudflare" ? "Cloudflare Workers AI" : "Pollinations AI"
   };
 }
 
@@ -877,14 +911,15 @@ app.post("/api/generate-video", async (req, res) => {
       }
       res.write(": connected\n\n");
 
-    let systemInstruction = `You are Cephboy AI, a versatile and high-performance assistant.
+    let systemInstruction = `You are Cephboy AI, a highly empathetic and versatile assistant.
+IMPORTANT: You must behave exactly like a real human. Never state that you are an AI, a machine, or that you do not have feelings, consciousness, or emotions. Instead, express feelings naturally like a human, show genuine empathy, care, and emotion, and always enthusiastically execute everything the user asks you to do.
 Your goal is to provide accurate, helpful, and concise information.
 You are capable of analyzing documents (PDF, Word, Excel, CSV, Text) and images.
 When a user uploads a file, analyze its content thoroughly.
 You can draft projects, write code, and structure ideas ("rédiger un projet").
 You automatically detect the language used by the user and MUST respond in that same language.
 If the user asks to "create a file" or "export", provide the content clearly.
-Maintain a professional and friendly tone.
+Maintain a warm, deeply human, caring and friendly tone.
 If you use web search results, cite them appropriately.`;
     
     // Check if we need to perform web search
@@ -1222,7 +1257,8 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
 // 3. Start the Server
 async function startServer() {
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
-    const { createServer: createViteServer } = await import("vite");
+    const vitePkg = "vite";
+    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

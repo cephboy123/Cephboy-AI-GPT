@@ -293,8 +293,9 @@ export default function ChatArea({
   };
 
   const downloadImage = (url: string) => {
+    if (!url) return;
     const a = document.createElement('a');
-    a.href = url;
+    a.href = `/api/download-image?url=${encodeURIComponent(url)}`;
     a.download = `cephboy_image_${Date.now()}.png`;
     document.body.appendChild(a);
     a.click();
@@ -514,7 +515,7 @@ export default function ChatArea({
                     )}
 
                     {/* Markdown Renderer */}
-                    <div className="space-y-3 text-xs sm:text-[13px] leading-relaxed text-zinc-200 break-words font-sans">
+                    <div className="space-y-3 text-sm sm:text-[15px] leading-relaxed text-zinc-200 break-words font-sans">
                       <Markdown
                         components={{
                           img: ({ src, alt }) => (
@@ -529,13 +530,13 @@ export default function ChatArea({
                               </button>
                             </div>
                           ),
-                          p: ({ children }) => <div className="leading-relaxed mb-3 text-zinc-300 last:mb-0 text-xs sm:text-[13px]">{children}</div>,
-                          h1: ({ children }) => <h1 className="text-sm font-extrabold mt-4 mb-2 text-zinc-100 border-b border-zinc-850 pb-1 uppercase tracking-wider">{children}</h1>,
-                          h2: ({ children }) => <h2 className="text-xs font-bold mt-3 mb-1.5 text-zinc-100">{children}</h2>,
-                          h3: ({ children }) => <h3 className="text-[11px] font-semibold mt-2.5 mb-1 text-zinc-200 uppercase tracking-wide">{children}</h3>,
-                          ul: ({ children }) => <ul className="list-disc pl-4 mb-3 space-y-1 text-zinc-400 text-xs sm:text-[13px]">{children}</ul>,
-                          ol: ({ children }) => <ol className="list-decimal pl-4 mb-3 space-y-1 text-zinc-400 text-xs sm:text-[13px]">{children}</ol>,
-                          li: ({ children }) => <li className="text-zinc-300 text-xs sm:text-[13px]">{children}</li>,
+                          p: ({ children }) => <div className="leading-relaxed mb-3 text-zinc-300 last:mb-0 text-sm sm:text-[15px]">{children}</div>,
+                          h1: ({ children }) => <h1 className="text-base font-extrabold mt-4 mb-2 text-zinc-100 border-b border-zinc-850 pb-1 uppercase tracking-wider">{children}</h1>,
+                          h2: ({ children }) => <h2 className="text-sm font-bold mt-3 mb-1.5 text-zinc-100">{children}</h2>,
+                          h3: ({ children }) => <h3 className="text-xs font-semibold mt-2.5 mb-1 text-zinc-200 uppercase tracking-wide">{children}</h3>,
+                          ul: ({ children }) => <ul className="list-disc pl-4 mb-3 space-y-1 text-zinc-400 text-sm sm:text-[15px]">{children}</ul>,
+                          ol: ({ children }) => <ol className="list-decimal pl-4 mb-3 space-y-1 text-zinc-400 text-sm sm:text-[15px]">{children}</ol>,
+                          li: ({ children }) => <li className="text-zinc-300 text-sm sm:text-[15px]">{children}</li>,
                           code: ({ node, className, children, ...props }: any) => {
                             const isBlock = !/inline/.test(className || '');
                             return isBlock ? (
@@ -570,16 +571,14 @@ export default function ChatArea({
                           referrerPolicy="no-referrer"
                         />
                         <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 backdrop-blur-xs">
-                          <a 
-                            href={message.imageUrl} 
-                            download={`cephboy_${Date.now()}.png`}
-                            target="_blank"
-                            rel="noreferrer"
+                          <button 
+                            type="button"
+                            onClick={() => downloadImage(message.imageUrl || '')}
                             className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shadow-md"
                           >
                             <Download className="w-4 h-4" />
                             Télécharger
-                          </a>
+                          </button>
                           <button 
                             type="button"
                             onClick={() => {
@@ -977,7 +976,7 @@ function ChatInput({
                 }
               }}
               placeholder={isVideoMode ? "Décrivez la vidéo à générer..." : isImageMode ? t.generatingImage : t.placeholder}
-              className="w-full bg-transparent border-0 outline-none text-zinc-100 placeholder-zinc-500 px-3 py-2 text-xs md:text-sm max-h-36 resize-none focus:ring-0 focus:outline-none"
+              className="w-full bg-transparent border-0 outline-none text-zinc-100 placeholder-zinc-500 px-3 py-2 text-sm md:text-base max-h-36 resize-none focus:ring-0 focus:outline-none"
               style={{ minHeight: '52px' }}
             />
             

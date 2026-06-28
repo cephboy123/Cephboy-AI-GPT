@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, Download, Maximize2, SkipBack, SkipForward, Clock } from 'lucide-react';
+import { Play, Pause, RotateCcw, Download, Maximize2, SkipBack, SkipForward, Clock, Volume2, VolumeX } from 'lucide-react';
 
 interface VideoPlayerProps {
   frames: string[];
@@ -10,7 +10,16 @@ export default function VideoPlayer({ frames, prompt }: VideoPlayerProps) {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [speed, setSpeed] = useState(800); // ms per frame
+  const [isMuted, setIsMuted] = useState(true); // muted by default to respect autoplay policies
+  
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Audio Refs
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const droneOscRef = useRef<OscillatorNode | null>(null);
+  const chimeOscRef = useRef<OscillatorNode | null>(null);
+  const filterNodeRef = useRef<BiquadFilterNode | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
 
   useEffect(() => {
     if (isPlaying) {
@@ -25,6 +34,115 @@ export default function VideoPlayer({ frames, prompt }: VideoPlayerProps) {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [isPlaying, speed, frames.length]);
+
+  // Lazy initialize cinematic synthesizer
+  const initAudio = () => {
+    if (audioCtxRef.current) return;
+
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioContextClass();
+      audioCtxRef.current = ctx;
+
+      // Master Gain for smooth volume transitions
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0, ctx.currentTime);
+      masterGain.connect(ctx.destination);
+      gainNodeRef.current = masterGain;
+
+      // Lowpass Filter for a deep, cinematic warm tone
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(180, ctx.currentTime);
+      filter.Q.setValueAtTime(1, ctx.currentTime);
+      filter.connect(masterGain);
+      filterNodeRef.current = filter;
+
+      // 1. Deep Bass Drone (Triangle wave) playing a low A (55Hz)
+      const drone = ctx.createOscillator();
+      drone.type = 'triangle';
+      drone.frequency.setValueAtTime(55, ctx.currentTime); 
+      drone.connect(filter);
+      drone.start();
+      droneOscRef.current = drone;
+
+      // 2. Soft Ambient Harmonic (Sine wave) playing A2 (110Hz)
+      const harmony = ctx.createOscillator();
+      harmony.type = 'sine';
+      harmony.frequency.setValueAtTime(110, ctx.currentTime); 
+      
+      const harmonyGain = ctx.createGain();
+      harmonyGain.gain.setValueAtTime(0.3, ctx.currentTime);
+      harmony.connect(harmonyGain);
+      harmonyGain.connect(filter);
+      
+      harmony.start();
+      chimeOscRef.current = harmony;
+    } catch (e) {
+      console.error("Failed to initialize Web Audio API synthesizer:", e);
+    }
+  };
+
+  // Manage audio play and pause states
+  useEffect(() => {
+    if (isPlaying && !isMuted) {
+      initAudio();
+      if (audioCtxRef.current) {
+        if (audioCtxRef.current.state === 'suspended') {
+          audioCtxRef.current.resume();
+        }
+        const ctx = audioCtxRef.current;
+        gainNodeRef.current?.gain.cancelScheduledValues(ctx.currentTime);
+        gainNodeRef.current?.gain.setValueAtTime(gainNodeRef.current.gain.value, ctx.currentTime);
+        gainNodeRef.current?.gain.linearRampToValueAtTime(0.4, ctx.currentTime + 0.5); // Smooth fade-in
+      }
+    } else {
+      if (audioCtxRef.current) {
+        const ctx = audioCtxRef.current;
+        gainNodeRef.current?.gain.cancelScheduledValues(ctx.currentTime);
+        gainNodeRef.current?.gain.setValueAtTime(gainNodeRef.current.gain.value, ctx.currentTime);
+        gainNodeRef.current?.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3); // Smooth fade-out
+      }
+    }
+  }, [isPlaying, isMuted]);
+
+  // Adapt harmonies and sound cutoff frequency based on the current scene frame
+  useEffect(() => {
+    if (!audioCtxRef.current || isMuted || !isPlaying) return;
+
+    const ctx = audioCtxRef.current;
+    
+    // Harmonic scale steps (A, C#, E, A) to create an evolving sci-fi space cinematic atmosphere
+    const frequencies = [110, 137.5, 165, 220]; 
+    const filterCutoffs = [180, 240, 300, 210]; 
+
+    if (chimeOscRef.current) {
+      chimeOscRef.current.frequency.cancelScheduledValues(ctx.currentTime);
+      chimeOscRef.current.frequency.setValueAtTime(chimeOscRef.current.frequency.value, ctx.currentTime);
+      chimeOscRef.current.frequency.exponentialRampToValueAtTime(frequencies[currentFrame % frequencies.length], ctx.currentTime + 0.6);
+    }
+    
+    if (filterNodeRef.current) {
+      filterNodeRef.current.frequency.cancelScheduledValues(ctx.currentTime);
+      filterNodeRef.current.frequency.setValueAtTime(filterNodeRef.current.frequency.value, ctx.currentTime);
+      filterNodeRef.current.frequency.linearRampToValueAtTime(filterCutoffs[currentFrame % filterCutoffs.length], ctx.currentTime + 0.8);
+    }
+  }, [currentFrame, isMuted, isPlaying]);
+
+  // Clean up audio nodes on component unmount
+  useEffect(() => {
+    return () => {
+      if (droneOscRef.current) {
+        try { droneOscRef.current.stop(); } catch (e) {}
+      }
+      if (chimeOscRef.current) {
+        try { chimeOscRef.current.stop(); } catch (e) {}
+      }
+      if (audioCtxRef.current) {
+        try { audioCtxRef.current.close(); } catch (e) {}
+      }
+    };
+  }, []);
 
   const handleNext = () => {
     setIsPlaying(false);
@@ -42,8 +160,10 @@ export default function VideoPlayer({ frames, prompt }: VideoPlayerProps) {
   };
 
   const downloadFrame = () => {
+    const url = frames[currentFrame];
+    if (!url) return;
     const link = document.createElement('a');
-    link.href = frames[currentFrame];
+    link.href = `/api/download-image?url=${encodeURIComponent(url)}`;
     link.download = `cephboy_video_frame_${currentFrame + 1}_${Date.now()}.png`;
     document.body.appendChild(link);
     link.click();
@@ -176,6 +296,23 @@ export default function VideoPlayer({ frames, prompt }: VideoPlayerProps) {
               title="Recommencer"
             >
               <RotateCcw className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => {
+                if (isMuted) {
+                  initAudio();
+                }
+                setIsMuted(!isMuted);
+              }}
+              className={`p-2 rounded-lg transition cursor-pointer flex items-center gap-1.5 px-2.5 text-xs font-semibold ${
+                !isMuted 
+                  ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' 
+                  : 'bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white border border-slate-700'
+              }`}
+              title={isMuted ? "Activer la bande-son cinématique" : "Couper la bande-son"}
+            >
+              {isMuted ? <VolumeX className="w-4 h-4 text-orange-500" /> : <Volume2 className="w-4 h-4 text-orange-400 animate-pulse" />}
+              <span className="hidden sm:inline">Son {isMuted ? "Off" : "On"}</span>
             </button>
           </div>
 

@@ -59,15 +59,44 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  let errorMessage = '';
+  let errorCode = '';
+  
+  if (error && typeof error === 'object') {
+    errorMessage = (error as any).message || '';
+    errorCode = (error as any).code || '';
+    if (!errorMessage && !errorCode) {
+      errorMessage = JSON.stringify(error);
+    }
+  } else {
+    errorMessage = String(error);
+  }
+
+  const errStrLower = `${errorMessage} ${errorCode}`.toLowerCase();
+  const isOfflineOrNetwork = 
+    errStrLower.includes('offline') || 
+    errStrLower.includes('unavailable') || 
+    errStrLower.includes('could not reach') || 
+    errStrLower.includes('network') ||
+    errStrLower.includes('internet');
+
+  if (isOfflineOrNetwork) {
+    console.warn(`Firestore Warning (Offline Mode): Operation ${operationType} on path ${path} is queued or deferred. Client is offline.`);
+    return;
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errorMessage || errorCode || 'Unknown Firestore error',
     authInfo: {
-      userId: null,
-      email: null,
-      emailVerified: null,
-      isAnonymous: null,
-      tenantId: null,
-      providerInfo: []
+      userId: auth.currentUser?.uid || null,
+      email: auth.currentUser?.email || null,
+      emailVerified: auth.currentUser?.emailVerified || null,
+      isAnonymous: auth.currentUser?.isAnonymous || null,
+      tenantId: auth.currentUser?.tenantId || null,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
     },
     operationType,
     path
