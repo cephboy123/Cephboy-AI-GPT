@@ -633,6 +633,22 @@ export default function App() {
               } else if (payload.type === 'error') {
                 assistantContent = payload.error;
                 setCurrentStatusText('');
+                setConversation(prev => {
+                  if (!prev) return null;
+                  const cleanedMsgs = prev.messages.filter(m => m.id !== assistantMsgId);
+                  const errorMsg: Message = {
+                    id: assistantMsgId,
+                    role: 'assistant',
+                    content: assistantContent,
+                    timestamp: Date.now(),
+                    citations: assistantCitations,
+                    providerUsed: detectedProvider
+                  };
+                  return {
+                    ...prev,
+                    messages: [...cleanedMsgs, errorMsg]
+                  };
+                });
               }
             } catch (err) {
               // Ignore partial JSON parse errors

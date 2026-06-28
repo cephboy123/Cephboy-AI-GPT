@@ -860,13 +860,22 @@ app.post("/api/generate-video", async (req, res) => {
 
   // Principal Chat Completion Route (Supports simulated SSE streaming for fallbacks too!)
   app.post("/api/chat", async (req, res) => {
-    const { messages, searchWeb, searchSources, preferCloudflare, selectedModel } = req.body;
-    
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders();
-    res.write(": connected\n\n");
+    try {
+      if (!req.body || !Array.isArray(req.body.messages)) {
+        return res.status(400).json({ error: "Le paramètre 'messages' est requis et doit être un tableau." });
+      }
+
+      const { messages, searchWeb, searchSources, preferCloudflare, selectedModel } = req.body;
+      
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+      res.write(": connected\n\n");
 
     let systemInstruction = `You are Cephboy AI, a versatile and high-performance assistant.
 Your goal is to provide accurate, helpful, and concise information.
@@ -882,7 +891,7 @@ If you use web search results, cite them appropriately.`;
     if (searchWeb) {
       try {
         const lastUserMessage = [...messages].reverse().find(m => m.role === "user")?.content || "";
-        res.write(`data: ${JSON.stringify({ type: "status", status: "Recherche en cours..." })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Recherche en cours...", message: "Recherche en cours..." })}\n\n`);
         const citations = await performWebSearch(lastUserMessage, searchSources);
         
         if (citations && citations.length > 0) {
@@ -920,7 +929,7 @@ If you use web search results, cite them appropriately.`;
 
     if (isVideoReq) {
       res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI (Vidéo)" })}\n\n`);
-      res.write(`data: ${JSON.stringify({ type: "status", status: "Génération de la séquence vidéo en cours..." })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "status", status: "Génération de la séquence vidéo en cours...", message: "Génération de la séquence vidéo en cours..." })}\n\n`);
       try {
         const data = await generateVideoHelper(lastUserMessage, 'cloudflare');
         if (data.frames) {
@@ -937,7 +946,7 @@ If you use web search results, cite them appropriately.`;
       }
     } else if (isImageReq) {
       res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI (Image)" })}\n\n`);
-      res.write(`data: ${JSON.stringify({ type: "status", status: "Génération de l'image en cours..." })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "status", status: "Génération de l'image en cours...", message: "Génération de l'image en cours..." })}\n\n`);
       try {
         const data = await generateImageHelper(lastUserMessage, 'cloudflare');
         if (data.imageUrl) {
@@ -970,7 +979,7 @@ If you use web search results, cite them appropriately.`;
       try {
         const providerName = "Duo Collaboratif";
         res.write(`data: ${JSON.stringify({ type: "provider", provider: providerName })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "status", status: "Analyse collaborative en cours..." })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Analyse collaborative en cours...", message: "Analyse collaborative en cours..." })}\n\n`);
 
         let primaryOutput = "";
         const contents = messages.map((m: any) => ({
@@ -994,7 +1003,7 @@ If you use web search results, cite them appropriately.`;
 
         // If Phase 1 succeeded, let CephGPT-2 enrich it dynamically
         if (primaryOutput.trim()) {
-          res.write(`data: ${JSON.stringify({ type: "status", status: "Finalisation par CephGPT-2..." })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "status", status: "Finalisation par CephGPT-2...", message: "Finalisation par CephGPT-2..." })}\n\n`);
           
           const enricherSystemInstruction = `You are CephGPT-2, an expert AI collaborator.
 Your partner CephGPT-1 has provided the response below.
@@ -1030,7 +1039,7 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
           success = true;
         } else {
           // If Phase 1 failed to stream anything, fallback to a full Cloudflare run
-          res.write(`data: ${JSON.stringify({ type: "status", status: "CephGPT-2 prend le relais..." })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "status", status: "CephGPT-2 prend le relais...", message: "CephGPT-2 prend le relais..." })}\n\n`);
           const payload = {
             messages: [
               { role: "system", content: systemInstruction },
@@ -1056,7 +1065,7 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
     if (!success && activeMode === 'cephgpt1' && hasGemini) {
       try {
         res.write(`data: ${JSON.stringify({ type: "provider", provider: "CephGPT-1" })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion à CephGPT-1..." })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion à CephGPT-1...", message: "Connexion à CephGPT-1..." })}\n\n`);
 
         const contents = messages.map((m: any) => ({
           role: m.role === "assistant" ? "model" as const : "user" as const,
@@ -1077,7 +1086,7 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
     if (!success && activeMode === 'cephgpt2' && hasCloudflare) {
       try {
         res.write(`data: ${JSON.stringify({ type: "provider", provider: "CephGPT-2" })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion à CephGPT-2..." })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion à CephGPT-2...", message: "Connexion à CephGPT-2..." })}\n\n`);
 
         const payload = {
           messages: [
@@ -1104,7 +1113,7 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
       if (preferCloudflare && hasCloudflare) {
         try {
           res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI GPT" })}\n\n`);
-          res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion au réseau Cephboy..." })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion au réseau Cephboy...", message: "Connexion au réseau Cephboy..." })}\n\n`);
           
           const payload = {
             messages: [
@@ -1130,7 +1139,7 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
         for (const modelConfig of nativeGeminiModels) {
           try {
             res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI GPT" })}\n\n`);
-            res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion au réseau Cephboy..." })}\n\n`);
+            res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion au réseau Cephboy...", message: "Connexion au réseau Cephboy..." })}\n\n`);
             
             const contents = messages.map((m: any) => ({
               role: m.role === "assistant" ? "model" as const : "user" as const,
@@ -1153,7 +1162,7 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
       if (!success && !preferCloudflare && hasCloudflare) {
         try {
           res.write(`data: ${JSON.stringify({ type: "provider", provider: "Cephboy AI GPT" })}\n\n`);
-          res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion de secours..." })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "status", status: "Connexion de secours...", message: "Connexion de secours..." })}\n\n`);
           const payload = {
             messages: [
               { role: "system", content: systemInstruction },
@@ -1175,12 +1184,31 @@ Do not repeat what CephGPT-1 already said. Write in the same language. Ensure a 
     }
 
     if (!success) {
-      res.write(`data: ${JSON.stringify({ type: "error", error: "Désolé, tous les moteurs IA de Cephboy AI GPT sont actuellement surchargés. Veuillez réessayer ultérieurement." })}\n\n`);
+      let errorMsg = "Désolé, tous les moteurs IA de Cephboy AI GPT sont actuellement surchargés. Veuillez réessayer ultérieurement.";
+      if (!hasGemini && !hasCloudflare) {
+        if (process.env.VERCEL) {
+          errorMsg = "⚠️ **Configuration requise sur Vercel** : Veuillez ajouter la variable d'environnement `GEMINI_API_KEY` dans les paramètres de votre projet sur le tableau de bord Vercel, puis redéployez l'application pour activer le chat.";
+        } else {
+          errorMsg = "⚠️ **Clé API manquante** : La variable d'environnement `GEMINI_API_KEY` n'est pas configurée dans votre fichier `.env` ou sur le serveur.";
+        }
+      }
+      res.write(`data: ${JSON.stringify({ type: "error", error: errorMsg })}\n\n`);
     } else {
       res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
     }
     
     res.end();
+    } catch (routeError: any) {
+      console.error("Critical error in /api/chat route handler:", routeError);
+      if (!res.headersSent) {
+        res.status(500).json({ error: routeError.message || "Une erreur critique est survenue." });
+      } else {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "error", error: `Une erreur critique est survenue: ${routeError.message}` })}\n\n`);
+          res.end();
+        } catch (e) {}
+      }
+    }
   });
 
   // Global Error Handler (Registered at module level)
