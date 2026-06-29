@@ -1,10 +1,12 @@
 import { initializeApp } from 'firebase/app';
 import { 
-  getFirestore, 
+  getFirestore,
+  initializeFirestore, 
   collection, 
   doc, 
   setDoc, 
-  getDoc, 
+  getDoc,
+  getDocFromServer,
   getDocs, 
   deleteDoc, 
   onSnapshot, 
@@ -26,11 +28,43 @@ export const firebaseConfig = {
   messagingSenderId: "271345228299"
 };
 
-const app = initializeApp(firebaseConfig);
+let _app: any;
+let _db: any;
+let _auth: any;
 
-// Critical: Use the custom database ID provided in the configuration
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+export function getApp() {
+  if (!_app) {
+    _app = initializeApp(firebaseConfig);
+  }
+  return _app;
+}
+
+export function getDb() {
+  if (!_db) {
+    const app = getApp();
+    // Use initializeFirestore with experimentalForceLongPolling to bypass some network issues
+    try {
+      _db = initializeFirestore(app, {
+        experimentalForceLongPolling: true,
+        experimentalAutoDetectLongPolling: true,
+      }, firebaseConfig.firestoreDatabaseId);
+    } catch (e) {
+      // Fallback to getFirestore if initializeFirestore fails (e.g. if already initialized)
+      _db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    }
+  }
+  return _db;
+}
+
+export function getAuthInstance() {
+  if (!_auth) {
+    const app = getApp();
+    _auth = getAuth(app);
+  }
+  return _auth;
+}
+
+
 
 export enum OperationType {
   CREATE = 'create',
@@ -66,7 +100,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     errorMessage = (error as any).message || '';
     errorCode = (error as any).code || '';
     if (!errorMessage && !errorCode) {
-      errorMessage = JSON.stringify(error);
+      try {
+        errorMessage = String(error);
+      } catch (e) {
+        errorMessage = 'Unknown error object';
+      }
     }
   } else {
     errorMessage = String(error);
@@ -85,24 +123,16 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     return;
   }
 
-  const errInfo: FirestoreErrorInfo = {
+  const auth = getAuthInstance();
+  const errInfo = {
     error: errorMessage || errorCode || 'Unknown Firestore error',
-    authInfo: {
-      userId: auth.currentUser?.uid || null,
-      email: auth.currentUser?.email || null,
-      emailVerified: auth.currentUser?.emailVerified || null,
-      isAnonymous: auth.currentUser?.isAnonymous || null,
-      tenantId: auth.currentUser?.tenantId || null,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
-        providerId: provider.providerId,
-        email: provider.email,
-      })) || []
-    },
+    userId: auth.currentUser?.uid || null,
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  
+  console.error('Firestore Error:', errInfo.error, 'Op:', errInfo.operationType, 'Path:', errInfo.path);
+  throw new Error(`Firestore Error: ${errInfo.error} (${errInfo.operationType} on ${errInfo.path})`);
 }
 
 export { 

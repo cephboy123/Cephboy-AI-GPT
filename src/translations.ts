@@ -32,6 +32,7 @@ export interface Translations {
   aiImages: string;
   selectLanguage: string;
   saveSettings: string;
+  automatic: string;
   aiSearchDesc: string;
   aiImageDesc: string;
   linkedinIntegration: string;
@@ -72,6 +73,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Génération d'Images",
     selectLanguage: "Choisir la langue",
     saveSettings: "Enregistrer",
+    automatic: "Automatique (Système)",
     aiSearchDesc: "Permet à l'IA de chercher des informations sur le web en temps réel.",
     aiImageDesc: "Active le mode création d'images pour vos requêtes.",
     linkedinIntegration: "Intégration LinkedIn",
@@ -110,6 +112,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Image Generation",
     selectLanguage: "Select Language",
     saveSettings: "Save",
+    automatic: "Automatic (System)",
     aiSearchDesc: "Allows AI to search for information on the web in real-time.",
     aiImageDesc: "Enables image creation mode for your requests.",
     linkedinIntegration: "LinkedIn Integration",
@@ -148,6 +151,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Generación de Imágenes",
     selectLanguage: "Seleccionar Idioma",
     saveSettings: "Guardar",
+    automatic: "Automático (Sistema)",
     aiSearchDesc: "Permite que la IA busque información en la web en tiempo real.",
     aiImageDesc: "Activa el modo de creación de imágenes para tus solicitudes.",
     linkedinIntegration: "Integración de LinkedIn",
@@ -186,6 +190,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "إنشاء الصور",
     selectLanguage: "اختر اللغة",
     saveSettings: "حفظ",
+    automatic: "تلقائي (النظام)",
     aiSearchDesc: "يسمح للذكاء الاصطناعي بالبحث عن المعلومات على الويب في الوقت الفعلي.",
     aiImageDesc: "يفعل وضع إنشاء الصور لطلباتك.",
     linkedinIntegration: "تكامل LinkedIn",
@@ -224,6 +229,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "图片生成",
     selectLanguage: "选择语言",
     saveSettings: "保存",
+    automatic: "自动 (系统)",
     aiSearchDesc: "允许 AI 实时在网页上搜索信息。",
     aiImageDesc: "为您的请求启用图片创建模式。",
     linkedinIntegration: "LinkedIn 集成",
@@ -262,6 +268,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Генерация изображений",
     selectLanguage: "Выбрать язык",
     saveSettings: "Сохранить",
+    automatic: "Автоматически (Система)",
     aiSearchDesc: "Позволяет ИИ искать информацию в интернете в режиме реального времени.",
     aiImageDesc: "Включает режим создания изображений для ваших запросов.",
     linkedinIntegration: "Интеграция с LinkedIn",
@@ -300,6 +307,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Geração de Imagens",
     selectLanguage: "Selecionar Idioma",
     saveSettings: "Salvar",
+    automatic: "Automático (Sistema)",
     aiSearchDesc: "Permite que a IA busque informações na web em tempo real.",
     aiImageDesc: "Ativa o modo de criação de imagens para suas solicitações.",
     linkedinIntegration: "Integração com LinkedIn",
@@ -338,6 +346,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Bildgenerierung",
     selectLanguage: "Sprache auswählen",
     saveSettings: "Speichern",
+    automatic: "Automatisch (System)",
     aiSearchDesc: "Ermöglicht es der KI, Informationen in Echtzeit im Web zu suchen.",
     aiImageDesc: "Aktiviert den Bilderzeugungsmodus für Ihre Anfragen.",
     linkedinIntegration: "LinkedIn Integration",
@@ -376,6 +385,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "画像生成",
     selectLanguage: "言語を選択",
     saveSettings: "保存",
+    automatic: "自動 (システム)",
     aiSearchDesc: "AIがリアルタイムでウェブ上の情報を検索できるようにします。",
     aiImageDesc: "リクエストの画像作成モードを有効にします。",
     linkedinIntegration: "LinkedIn 連携",
@@ -414,6 +424,7 @@ export const translations: Record<Language, Translations> = {
     aiImages: "Generazione Immagini",
     selectLanguage: "Seleziona Lingua",
     saveSettings: "Salva",
+    automatic: "Automatico (Sistema)",
     aiSearchDesc: "Consente all'IA di cercare informazioni sul web in tempo reale.",
     aiImageDesc: "Abilita la modalità di creazione delle immagini per le tue richieste.",
     linkedinIntegration: "Integrazione LinkedIn",

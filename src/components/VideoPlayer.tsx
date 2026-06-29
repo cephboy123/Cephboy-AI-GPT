@@ -1,339 +1,186 @@
-import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, Download, Maximize2, SkipBack, SkipForward, Clock, Volume2, VolumeX } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Play, Pause, Maximize, Download, ExternalLink, Video } from 'lucide-react';
 
 interface VideoPlayerProps {
-  frames: string[];
-  prompt: string;
+  title: string;
+  thumbnail?: string;
+  videoUrl: string;
+  duration?: number;
+  source?: string;
+  downloadUrl?: string;
 }
 
-export default function VideoPlayer({ frames, prompt }: VideoPlayerProps) {
-  const [currentFrame, setCurrentFrame] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [speed, setSpeed] = useState(800); // ms per frame
-  const [isMuted, setIsMuted] = useState(true); // muted by default to respect autoplay policies
-  
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  
-  // Audio Refs
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const droneOscRef = useRef<OscillatorNode | null>(null);
-  const chimeOscRef = useRef<OscillatorNode | null>(null);
-  const filterNodeRef = useRef<BiquadFilterNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
+export default function VideoPlayer({ title, thumbnail, videoUrl, duration, source, downloadUrl }: VideoPlayerProps) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isHovering, setIsHovering] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  useEffect(() => {
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+
+  const proxiedVideoUrl = videoUrl ? `/api/proxy-video?url=${encodeURIComponent(videoUrl)}` : null;
+
+  const togglePlay = async () => {
+    if (!videoRef.current || !proxiedVideoUrl) return;
+    
     if (isPlaying) {
-      intervalRef.current = setInterval(() => {
-        setCurrentFrame((prev) => (prev + 1) % frames.length);
-      }, speed);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [isPlaying, speed, frames.length]);
-
-  // Lazy initialize cinematic synthesizer
-  const initAudio = () => {
-    if (audioCtxRef.current) return;
-
-    try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = new AudioContextClass();
-      audioCtxRef.current = ctx;
-
-      // Master Gain for smooth volume transitions
-      const masterGain = ctx.createGain();
-      masterGain.gain.setValueAtTime(0, ctx.currentTime);
-      masterGain.connect(ctx.destination);
-      gainNodeRef.current = masterGain;
-
-      // Lowpass Filter for a deep, cinematic warm tone
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(180, ctx.currentTime);
-      filter.Q.setValueAtTime(1, ctx.currentTime);
-      filter.connect(masterGain);
-      filterNodeRef.current = filter;
-
-      // 1. Deep Bass Drone (Triangle wave) playing a low A (55Hz)
-      const drone = ctx.createOscillator();
-      drone.type = 'triangle';
-      drone.frequency.setValueAtTime(55, ctx.currentTime); 
-      drone.connect(filter);
-      drone.start();
-      droneOscRef.current = drone;
-
-      // 2. Soft Ambient Harmonic (Sine wave) playing A2 (110Hz)
-      const harmony = ctx.createOscillator();
-      harmony.type = 'sine';
-      harmony.frequency.setValueAtTime(110, ctx.currentTime); 
-      
-      const harmonyGain = ctx.createGain();
-      harmonyGain.gain.setValueAtTime(0.3, ctx.currentTime);
-      harmony.connect(harmonyGain);
-      harmonyGain.connect(filter);
-      
-      harmony.start();
-      chimeOscRef.current = harmony;
-    } catch (e) {
-      console.error("Failed to initialize Web Audio API synthesizer:", e);
+      try {
+        if (playPromiseRef.current) {
+          try { await playPromiseRef.current; } catch (e) {}
+        }
+        videoRef.current.pause();
+        setIsPlaying(false);
+      } catch (err) {
+        videoRef.current.pause();
+        setIsPlaying(false);
+      }
+    } else {
+      try {
+        const promise = videoRef.current.play();
+        playPromiseRef.current = promise;
+        setIsPlaying(true);
+        await promise;
+        playPromiseRef.current = null;
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error("Video playback failed:", err.message || "Unknown error");
+        }
+        setIsPlaying(false);
+        playPromiseRef.current = null;
+      }
     }
   };
 
-  // Manage audio play and pause states
   useEffect(() => {
-    if (isPlaying && !isMuted) {
-      initAudio();
-      if (audioCtxRef.current) {
-        if (audioCtxRef.current.state === 'suspended') {
-          audioCtxRef.current.resume();
-        }
-        const ctx = audioCtxRef.current;
-        gainNodeRef.current?.gain.cancelScheduledValues(ctx.currentTime);
-        gainNodeRef.current?.gain.setValueAtTime(gainNodeRef.current.gain.value, ctx.currentTime);
-        gainNodeRef.current?.gain.linearRampToValueAtTime(0.4, ctx.currentTime + 0.5); // Smooth fade-in
-      }
-    } else {
-      if (audioCtxRef.current) {
-        const ctx = audioCtxRef.current;
-        gainNodeRef.current?.gain.cancelScheduledValues(ctx.currentTime);
-        gainNodeRef.current?.gain.setValueAtTime(gainNodeRef.current.gain.value, ctx.currentTime);
-        gainNodeRef.current?.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3); // Smooth fade-out
-      }
+    if (videoRef.current && proxiedVideoUrl) {
+      videoRef.current.load();
     }
-  }, [isPlaying, isMuted]);
+  }, [proxiedVideoUrl]);
 
-  // Adapt harmonies and sound cutoff frequency based on the current scene frame
-  useEffect(() => {
-    if (!audioCtxRef.current || isMuted || !isPlaying) return;
-
-    const ctx = audioCtxRef.current;
-    
-    // Harmonic scale steps (A, C#, E, A) to create an evolving sci-fi space cinematic atmosphere
-    const frequencies = [110, 137.5, 165, 220]; 
-    const filterCutoffs = [180, 240, 300, 210]; 
-
-    if (chimeOscRef.current) {
-      chimeOscRef.current.frequency.cancelScheduledValues(ctx.currentTime);
-      chimeOscRef.current.frequency.setValueAtTime(chimeOscRef.current.frequency.value, ctx.currentTime);
-      chimeOscRef.current.frequency.exponentialRampToValueAtTime(frequencies[currentFrame % frequencies.length], ctx.currentTime + 0.6);
-    }
-    
-    if (filterNodeRef.current) {
-      filterNodeRef.current.frequency.cancelScheduledValues(ctx.currentTime);
-      filterNodeRef.current.frequency.setValueAtTime(filterNodeRef.current.frequency.value, ctx.currentTime);
-      filterNodeRef.current.frequency.linearRampToValueAtTime(filterCutoffs[currentFrame % filterCutoffs.length], ctx.currentTime + 0.8);
-    }
-  }, [currentFrame, isMuted, isPlaying]);
-
-  // Clean up audio nodes on component unmount
   useEffect(() => {
     return () => {
-      if (droneOscRef.current) {
-        try { droneOscRef.current.stop(); } catch (e) {}
-      }
-      if (chimeOscRef.current) {
-        try { chimeOscRef.current.stop(); } catch (e) {}
-      }
-      if (audioCtxRef.current) {
-        try { audioCtxRef.current.close(); } catch (e) {}
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.src = "";
+        try { videoRef.current.load(); } catch (e) {}
       }
     };
   }, []);
 
-  const handleNext = () => {
-    setIsPlaying(false);
-    setCurrentFrame((prev) => (prev + 1) % frames.length);
-  };
+  const [isDownloading, setIsDownloading] = useState(false);
 
-  const handlePrev = () => {
-    setIsPlaying(false);
-    setCurrentFrame((prev) => (prev - 1 + frames.length) % frames.length);
-  };
-
-  const handleReset = () => {
-    setIsPlaying(false);
-    setCurrentFrame(0);
-  };
-
-  const downloadFrame = () => {
-    const url = frames[currentFrame];
-    if (!url) return;
-    const link = document.createElement('a');
-    const filename = `cephboy_video_frame_${currentFrame + 1}`;
-    link.href = `/api/download-image?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const handleFullScreen = () => {
-    const element = document.getElementById(`video-container-${prompt.slice(0, 10)}`);
-    if (element) {
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      } else {
-        element.requestFullscreen().catch((err) => {
-          console.error("Fullscreen error", err);
-        });
-      }
+  const handleDownload = async () => {
+    if (!videoUrl || isDownloading) return;
+    setIsDownloading(true);
+    try {
+      const downloadUrl = `/api/proxy-video?url=${encodeURIComponent(videoUrl)}&download=true`;
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.target = '_blank';
+      link.download = `${title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Download failed:", err);
+    } finally {
+      setIsDownloading(false);
     }
+  };
+
+  const formatDuration = (seconds?: number) => {
+    if (!seconds) return '';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
     <div 
-      id={`video-container-${prompt.slice(0, 10)}`}
-      className="mt-4 relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 max-w-xl shadow-lg flex flex-col group font-sans"
+      className="group relative w-full bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 shadow-xl my-4"
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
     >
-      {/* Video Display Stage */}
-      <div className="relative aspect-video w-full overflow-hidden flex items-center justify-center bg-black">
-        {frames.map((frame, index) => (
-          <img
-            key={index}
-            src={frame}
-            alt={`Frame ${index + 1}`}
-            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ease-in-out ${
-              index === currentFrame ? 'opacity-100 scale-100 z-10' : 'opacity-0 scale-98 z-0'
-            }`}
-            referrerPolicy="no-referrer"
-          />
-        ))}
-
-        {/* Storyboard Prompt Overlay */}
-        <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-[10px] text-white/90 z-20 pointer-events-none uppercase tracking-wider font-bold">
-          Plan {currentFrame + 1} / {frames.length}
-        </div>
-
-        {/* Big Play / Pause Overlay on hover */}
-        <div className="absolute inset-0 bg-black/25 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-25 pointer-events-none">
-          <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur-md border border-white/40 flex items-center justify-center text-white shadow-lg pointer-events-auto cursor-pointer active:scale-95 transition-all" onClick={() => setIsPlaying(!isPlaying)}>
-            {isPlaying ? <Pause className="w-6 h-6 fill-white" /> : <Play className="w-6 h-6 fill-white ml-0.5" />}
-          </div>
-        </div>
-      </div>
-
-      {/* Progressive timeline bar */}
-      <div className="w-full h-1 bg-slate-800 relative z-30 cursor-pointer">
-        <div 
-          className="h-full bg-orange-500 transition-all duration-300" 
-          style={{ width: `${((currentFrame + 1) / frames.length) * 100}%` }}
+      {/* Aspect Ratio Container */}
+      <div className="aspect-video relative bg-black">
+        <video
+          key={proxiedVideoUrl || 'no-video'}
+          ref={videoRef}
+          src={proxiedVideoUrl || undefined}
+          crossOrigin="anonymous"
+          poster={thumbnail || undefined}
+          className="w-full h-full object-contain"
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onWaiting={() => console.log("Video buffering...")}
+          onError={(e) => {
+            const target = e.target as HTMLVideoElement;
+            console.error("Video element error:", target.error?.message, "Code:", target.error?.code);
+            if (target.error?.code === 4) {
+              alert("Impossible de lire cette vidéo (Erreur de format ou lien expiré). Les vidéos d'Internet Archive peuvent parfois être indisponibles temporairement.");
+            }
+          }}
+          playsInline
         />
+
+        {/* Overlay Controls */}
+        <div className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity duration-300 ${isPlaying && !isHovering ? 'opacity-0' : 'opacity-100'}`}>
+          <button
+            onClick={togglePlay}
+            className="w-16 h-16 rounded-full bg-orange-500/90 hover:bg-orange-500 flex items-center justify-center text-white transition-transform active:scale-90 shadow-2xl"
+          >
+            {isPlaying ? <Pause className="w-8 h-8 fill-white" /> : <Play className="w-8 h-8 fill-white ml-1" />}
+          </button>
+        </div>
+
+        {/* Duration Badge */}
+        {duration && (
+          <div className="absolute bottom-3 right-3 px-2 py-1 bg-black/70 text-white text-[10px] font-bold rounded-md backdrop-blur-sm border border-white/10">
+            {formatDuration(duration)}
+          </div>
+        )}
+
+        {/* Source Badge */}
+        {source && (
+          <div className="absolute top-3 left-3 px-2 py-1 bg-orange-500/90 text-white text-[10px] font-bold rounded-md shadow-lg uppercase tracking-wider">
+            {source}
+          </div>
+        )}
       </div>
 
-      {/* Player Interface Controls */}
-      <div className="p-4 bg-slate-900 border-t border-slate-800 text-white flex flex-col gap-3 relative z-30">
-        <div className="flex items-center justify-between">
-          {/* Timeline dots / frames picker */}
-          <div className="flex items-center gap-1.5">
-            {frames.map((_, index) => (
-              <button
-                key={index}
-                onClick={() => {
-                  setIsPlaying(false);
-                  setCurrentFrame(index);
-                }}
-                className={`w-2.5 h-2.5 rounded-full transition-all cursor-pointer ${
-                  index === currentFrame 
-                    ? 'bg-orange-500 scale-125' 
-                    : 'bg-slate-600 hover:bg-slate-400'
-                }`}
-                title={`Sauter au plan ${index + 1}`}
-              />
-            ))}
+      {/* Info & Actions */}
+      <div className="p-4 bg-zinc-900/50 backdrop-blur-md flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-500 shrink-0 border border-zinc-700">
+            <Video className="w-5 h-5" />
           </div>
-
-          {/* Speed Selector */}
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-            <Clock className="w-3.5 h-3.5" />
-            <div className="flex gap-1">
-              {[1200, 800, 400].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setSpeed(s)}
-                  className={`px-2 py-0.5 rounded transition cursor-pointer ${
-                    speed === s 
-                      ? 'bg-orange-600 text-white' 
-                      : 'hover:bg-slate-800 hover:text-white'
-                  }`}
-                >
-                  {s === 1200 ? 'Lent' : s === 800 ? '1x' : 'Rapide'}
-                </button>
-              ))}
-            </div>
+          <div className="min-w-0">
+            <h4 className="text-sm font-semibold text-zinc-100 truncate pr-2">
+              {title}
+            </h4>
+            <p className="text-[11px] text-zinc-500 font-medium">
+              Royalty-free Video • {source || 'Web'}
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
-          {/* Main playback control buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handlePrev}
-              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-              title="Plan précédent"
-            >
-              <SkipBack className="w-4 h-4 fill-current" />
-            </button>
-            <button
-              onClick={() => setIsPlaying(!isPlaying)}
-              className="p-2.5 bg-orange-600 hover:bg-orange-500 rounded-xl text-white transition cursor-pointer shadow-md shadow-orange-600/10 active:scale-95"
-              title={isPlaying ? "Mettre en pause" : "Lancer la lecture"}
-            >
-              {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white ml-0.5" />}
-            </button>
-            <button
-              onClick={handleNext}
-              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-              title="Plan suivant"
-            >
-              <SkipForward className="w-4 h-4 fill-current" />
-            </button>
-            <button
-              onClick={handleReset}
-              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-              title="Recommencer"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => {
-                if (isMuted) {
-                  initAudio();
-                }
-                setIsMuted(!isMuted);
-              }}
-              className={`p-2 rounded-lg transition cursor-pointer flex items-center gap-1.5 px-2.5 text-xs font-semibold ${
-                !isMuted 
-                  ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' 
-                  : 'bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white border border-slate-700'
-              }`}
-              title={isMuted ? "Activer la bande-son cinématique" : "Couper la bande-son"}
-            >
-              {isMuted ? <VolumeX className="w-4 h-4 text-orange-500" /> : <Volume2 className="w-4 h-4 text-orange-400 animate-pulse" />}
-              <span className="hidden sm:inline">Son {isMuted ? "Off" : "On"}</span>
-            </button>
-          </div>
-
-          {/* Download & Fullscreen controls */}
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={downloadFrame}
-              className="p-2 bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white rounded-lg transition flex items-center gap-1.5 px-3 text-xs font-bold cursor-pointer"
-              title="Télécharger l'image de ce plan"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Image</span>
-            </button>
-            <button
-              onClick={handleFullScreen}
-              className="p-2 bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white rounded-lg transition cursor-pointer"
-              title="Plein écran"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={handleDownload}
+            disabled={isDownloading}
+            className={`p-2 rounded-xl transition-colors ${isDownloading ? 'text-orange-500 bg-orange-500/10' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800'}`}
+            title={isDownloading ? "Téléchargement..." : "Télécharger la vidéo"}
+          >
+            <Download className={`w-4 h-4 ${isDownloading ? 'animate-spin' : ''}`} />
+          </button>
+          <a
+            href={downloadUrl || videoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-xl transition-colors"
+            title="Ouvrir dans un nouvel onglet"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </a>
         </div>
       </div>
     </div>

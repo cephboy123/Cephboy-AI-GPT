@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { 
-  db, 
+  getDb, 
   collection, 
   query, 
   orderBy, 
@@ -25,7 +25,8 @@ import {
   Zap,
   Globe,
   ChevronDown,
-  Check
+  Check,
+  RefreshCw
 } from 'lucide-react';
 import { translations, languages, Language } from '../translations';
 
@@ -36,9 +37,7 @@ interface SidebarProps {
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
   language: Language;
-  onLanguageChange: (lang: Language) => void;
-  onOpenSettings: () => void;
-  logoVersion?: number;
+  onLanguageChange: (lang: Language | 'auto') => void;
   userId: string | null;
   authError?: boolean;
 }
@@ -51,8 +50,6 @@ export default function Sidebar({
   setIsOpen,
   language,
   onLanguageChange,
-  onOpenSettings,
-  logoVersion = Date.now(),
   userId,
   authError
 }: SidebarProps) {
@@ -78,7 +75,7 @@ export default function Sidebar({
     
     // Query only by userId to avoid needing a composite index for orderBy
     const q = query(
-      collection(db, 'conversations'), 
+      collection(getDb(), 'conversations'), 
       where('userId', '==', userId)
     );
     
@@ -137,7 +134,7 @@ export default function Sidebar({
     e.stopPropagation();
     if (confirm("Voulez-vous vraiment supprimer cette conversation ?")) {
       try {
-        await deleteDoc(doc(db, 'conversations', id));
+        await deleteDoc(doc(getDb(), 'conversations', id));
         if (currentConversationId === id) {
           // If the deleted one was selected, the App state will handle resetting
           onCreateNewConversation();
@@ -162,7 +159,7 @@ export default function Sidebar({
           <div className="flex items-center gap-2">
             <div className="w-10 h-10 bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 shadow-sm">
               <img 
-                src={`/logo.png?v=${logoVersion}`} 
+                src="/logo.png" 
                 alt="Logo" 
                 className="w-full h-full object-cover"
                 onError={(e) => {
@@ -175,7 +172,7 @@ export default function Sidebar({
                 {t.appName}
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <div className={`w-1.5 h-1.5 ${authError ? 'bg-orange-500' : 'bg-green-500'} rounded-full ${authError ? '' : 'animate-pulse'}`} />
+                <div className={`w-1.5 h-1.5 ${authError ? 'bg-orange-500' : 'bg-green-500'} rounded-full`} />
                 <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider">
                   {authError ? (language === 'fr' ? 'Mode Local' : 'Local Mode') : t.online}
                 </span>
@@ -216,7 +213,22 @@ export default function Sidebar({
           </button>
 
           {isLangMenuOpen && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl z-50 py-1 max-h-48 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl z-50 py-1 max-h-56 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+              <button
+                onClick={() => {
+                  onLanguageChange('auto');
+                  setIsLangMenuOpen(false);
+                }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 text-xs transition-colors hover:bg-zinc-850 cursor-pointer ${!localStorage.getItem('app-language-override') ? 'text-orange-500 bg-orange-950/40 font-semibold' : 'text-zinc-300'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="w-3 h-3" />
+                  <span>{t.automatic}</span>
+                </div>
+                {!localStorage.getItem('app-language-override') && <Check className="w-3 h-3" />}
+              </button>
+              <div className="h-px bg-zinc-800 my-1 mx-2" />
+              
               {languages.map((lang) => (
                 <button
                   key={lang.id}
@@ -295,15 +307,6 @@ export default function Sidebar({
       </div>
 
       {/* Settings Button Only */}
-      <div className="p-4 border-t border-zinc-800 bg-zinc-900/20 font-sans">
-        <button
-          onClick={onOpenSettings}
-          className="w-full text-[11px] bg-zinc-900 hover:bg-zinc-850 text-zinc-300 px-3 py-2.5 rounded-lg border border-zinc-800 transition flex items-center justify-center gap-2 group shadow-xs cursor-pointer font-semibold"
-        >
-          <Activity className="w-3.5 h-3.5 text-zinc-400 group-hover:text-orange-500 transition-colors" />
-          {t.settings}
-        </button>
-      </div>
     </div>
   );
 

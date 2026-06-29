@@ -1,18 +1,17 @@
 import { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
-import SettingsModal from './components/SettingsModal';
 import { translations, Language } from './translations';
 import { Conversation, Message, Citation, saveConversationToLocalCache, getConversationFromLocalCache } from './components/types';
 import { Cpu, X, Check, Search, ExternalLink, Activity, Zap, RefreshCw } from 'lucide-react';
 import { 
-  db, 
+  getDb, 
   collection, 
   doc, 
   setDoc, 
   getDoc,
   deleteDoc,
-  auth,
+  getAuthInstance,
   signInAnonymously,
   onAuthStateChanged,
   handleFirestoreError,
@@ -33,17 +32,28 @@ export default function App() {
   const [currentProvider, setCurrentProvider] = useState<string>('');
   const [currentStatusText, setCurrentStatusText] = useState<string>('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [searchWeb, setSearchWeb] = useState(false);
   const [linkedinSearch, setLinkedinSearch] = useState(false);
   const [isImageMode, setIsImageMode] = useState(false);
-  const [isVideoMode, setIsVideoMode] = useState(false);
   const [imageEngine, setImageEngine] = useState<'pollinations' | 'gemini' | 'pixelapi' | 'cloudflare'>('pollinations');
   const [preferCloudflare, setPreferCloudflare] = useState<boolean>(() => localStorage.getItem('prefer-cloudflare') === 'true');
   const [selectedModel, setSelectedModel] = useState<'cephgpt1' | 'cephgpt2' | 'duo'>(() => {
     return (localStorage.getItem('selected-model') as 'cephgpt1' | 'cephgpt2' | 'duo') || 'duo';
   });
-  const [logoVersion, setLogoVersion] = useState(Date.now());
+
+  const saveSafe = async (id: string, conv: Conversation) => {
+    const MAX_MESSAGES = 40;
+    const truncatedConv = {
+      ...conv,
+      messages: conv.messages.length > MAX_MESSAGES 
+          ? conv.messages.slice(-MAX_MESSAGES)
+          : conv.messages
+    };
+    if (truncatedConv.userId === undefined) {
+      truncatedConv.userId = null as any; // Firestore does not support undefined
+    }
+    await setDoc(doc(getDb(), 'conversations', id), truncatedConv);
+  };
 
   const handleSetSelectedModel = (val: 'cephgpt1' | 'cephgpt2' | 'duo') => {
     setSelectedModel(val);
@@ -55,18 +65,71 @@ export default function App() {
     localStorage.setItem('prefer-cloudflare', String(val));
   };
   const [language, setLanguage] = useState<Language>(() => {
-    const saved = localStorage.getItem('app-language');
-    return (saved as Language) || 'fr';
+    const override = localStorage.getItem('app-language-override');
+    if (override && override !== 'auto') return override as Language;
+    
+    if (typeof navigator !== 'undefined') {
+      // Use languages array first as it's more comprehensive on mobile
+      const browserLanguages = navigator.languages || [navigator.language];
+      for (const lang of browserLanguages) {
+        const browserLang = lang.split(/[-_]/)[0].toLowerCase();
+        const supportedLanguages = ['fr', 'en', 'es', 'ar', 'zh', 'ru', 'pt', 'de', 'ja', 'it'];
+        if (supportedLanguages.includes(browserLang)) {
+          return browserLang as Language;
+        }
+      }
+    }
+    return 'fr'; // Solid default for this app
   });
 
   const t = translations[language];
+
+  // System language listener
+  useEffect(() => {
+    const handleSystemLanguageChange = () => {
+      const override = localStorage.getItem('app-language-override');
+      if (!override && typeof navigator !== 'undefined') {
+        const currentLang = (navigator.languages && navigator.languages.length > 0) 
+          ? navigator.languages[0] 
+          : navigator.language;
+          
+        if (currentLang) {
+          const browserLang = currentLang.split('-')[0].toLowerCase();
+          const supportedLanguages = ['fr', 'en', 'es', 'ar', 'zh', 'ru', 'pt', 'de', 'ja', 'it'];
+          if (supportedLanguages.includes(browserLang)) {
+            setLanguage(browserLang as Language);
+          } else {
+            setLanguage('fr');
+          }
+        }
+      }
+    };
+    
+    // Check once on mount to ensure we have the most up-to-date language
+    handleSystemLanguageChange();
+
+    window.addEventListener('languagechange', handleSystemLanguageChange);
+    
+    // Handle tab visibility change (especially useful on mobile when returning from settings)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleSystemLanguageChange();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      window.removeEventListener('languagechange', handleSystemLanguageChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
 
   const [isRetryingAuth, setIsRetryingAuth] = useState(false);
 
   const migrateConversations = async (oldId: string, newId: string) => {
     if (!oldId || !newId || oldId === newId) return;
     try {
-      const q = query(collection(db, "conversations"), where("userId", "==", oldId));
+      const q = query(collection(getDb(), "conversations"), where("userId", "==", oldId));
       const snapshot = await getDocs(q);
       if (snapshot.empty) {
         localStorage.removeItem('cephboy-local-session-id');
@@ -76,7 +139,7 @@ export default function App() {
       console.log(`Migration: Found ${snapshot.size} conversations to migrate from ${oldId} to ${newId}`);
       
       for (const d of snapshot.docs) {
-        await setDoc(doc(db, "conversations", d.id), { userId: newId }, { merge: true });
+        await setDoc(doc(getDb(), "conversations", d.id), { userId: newId }, { merge: true });
         console.log(`Migration: Migrated doc ${d.id}`);
       }
       
@@ -89,7 +152,7 @@ export default function App() {
 
   // 0. Handle Authentication
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(getAuthInstance(), (user) => {
       if (user) {
         console.log("Auth: Authenticated as", user.uid);
         setUserId(user.uid);
@@ -103,7 +166,7 @@ export default function App() {
         }
       } else {
         console.log("Auth: Not authenticated, attempting anonymous sign-in...");
-        signInAnonymously(auth).catch((err) => {
+        signInAnonymously(getAuthInstance()).catch((err) => {
           console.error("Auth: Anonymous sign-in failed:", err.message);
           
           let localId = localStorage.getItem('cephboy-local-session-id');
@@ -132,7 +195,7 @@ export default function App() {
     setAuthErrorCode(null);
     try {
       console.log("Auth: Retrying sign-in...");
-      await signInAnonymously(auth);
+      await signInAnonymously(getAuthInstance());
       // onAuthStateChanged will handle the rest
       console.log("Auth: Sign-in command sent successfully");
     } catch (err: any) {
@@ -156,16 +219,11 @@ export default function App() {
     if (authError && !isRetryingAuth) {
       const interval = setInterval(() => {
         console.log("Auth: Passive auto-retry...");
-        signInAnonymously(auth).catch(() => {});
+        signInAnonymously(getAuthInstance()).catch(() => {});
       }, 15000);
       return () => clearInterval(interval);
     }
   }, [authError, isRetryingAuth]);
-
-  // Persist language
-  useEffect(() => {
-    localStorage.setItem('app-language', language);
-  }, [language]);
 
   // Persist current conversation ID
   useEffect(() => {
@@ -183,8 +241,17 @@ export default function App() {
     }
   }, [conversation]);
 
-  const handleLanguageChange = (newLang: Language) => {
-    localStorage.setItem('app-language', newLang);
+  // User explicitly set language
+  const handleLanguageChange = (newLang: Language | 'auto') => {
+    if (newLang === 'auto') {
+      localStorage.removeItem('app-language-override');
+      localStorage.removeItem('app-language');
+    } else {
+      localStorage.setItem('app-language-override', newLang);
+      localStorage.setItem('app-language', newLang);
+      setLanguage(newLang as Language);
+    }
+    // Ensure state refreshes completely for translations and detection logic
     window.location.reload();
   };
 
@@ -213,7 +280,7 @@ export default function App() {
 
     const fetchConv = async () => {
       try {
-        const docRef = doc(db, 'conversations', currentConversationId);
+        const docRef = doc(getDb(), 'conversations', currentConversationId);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
           const data = { id: docSnap.id, ...docSnap.data() } as Conversation;
@@ -280,17 +347,18 @@ export default function App() {
       messages: []
     };
 
-    try {
-      await setDoc(doc(db, 'conversations', newId), newChat);
-      setCurrentConversationId(newId);
-    } catch (err) {
+    saveConversationToLocalCache(newChat);
+    setCurrentConversationId(newId);
+    setConversation(newChat);
+
+    saveSafe(newId, newChat).catch((err) => {
       console.error("Failed to create new chat in Firestore:", err);
       handleFirestoreError(err, OperationType.CREATE, `conversations/${newId}`);
-    }
+    });
   };
 
   // 2. Main message sender
-  const handleSendMessage = async (content: string, searchWeb: boolean, sources: string[], imageEngine?: string) => {
+  const handleSendMessage = async (content: string, searchWeb: boolean, sources: string[], imageEngine?: string, imageUrl?: string) => {
     let activeId = currentConversationId;
     
     // Create new conversation automatically if none is selected
@@ -300,132 +368,29 @@ export default function App() {
       const newChat: Conversation = {
         id: activeId,
         userId: userId,
-        title: imageEngine === 'video'
-          ? `Vidéo: ${content.slice(0, 25)}...`
-          : imageEngine 
+        title: imageEngine 
             ? `Image: ${content.slice(0, 25)}...`
             : content.slice(0, 30) + (content.length > 30 ? "..." : ""),
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: []
       };
-      try {
-        await setDoc(doc(db, 'conversations', activeId), newChat);
-        setCurrentConversationId(activeId);
-      } catch (err) {
+      
+      saveConversationToLocalCache(newChat);
+      setCurrentConversationId(activeId);
+      setConversation(newChat);
+      
+      saveSafe(activeId, newChat).catch((err) => {
         console.error("Failed to create auto chat in Firestore:", err);
         handleFirestoreError(err, OperationType.CREATE, `conversations/${activeId}`);
-        return;
-      }
-    }
-
-    if (imageEngine === 'video') {
-      const userMsg: Message = {
-        id: `msg_${Date.now()}_user`,
-        role: 'user',
-        content: `Générer une vidéo : "${content}"`,
-        timestamp: Date.now()
-      };
-      
-      const currentMessages = conversation ? [...conversation.messages] : [];
-      const updatedMessages = [...currentMessages, userMsg];
-      
-      const updatedConv: Conversation = {
-        id: activeId,
-        title: conversation?.title === "Nouvelle conversation" || !conversation 
-          ? `Vidéo: ${content.slice(0, 25)}...`
-          : conversation.title,
-        createdAt: conversation?.createdAt || Date.now(),
-        updatedAt: Date.now(),
-        messages: updatedMessages
-      };
-      
-      setConversation(updatedConv);
-      setIsGenerating(true);
-      setCurrentProvider('Cloudflare Workers AI');
-      setCurrentStatusText("Génération de la séquence vidéo en cours...");
-      
-      try {
-        await setDoc(doc(db, 'conversations', activeId), updatedConv);
-      } catch (err) {
-        console.error("Error saving user message:", err);
-      }
-      
-      const assistantMsgId = `msg_${Date.now()}_assistant`;
-      
-      try {
-        const response = await fetch('/api/generate-video', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: content }) // let backend automatically use the fastest engines with robust fallback
-        });
-        
-        if (!response.ok) {
-          let errorMessage = "Erreur lors de la génération de la vidéo.";
-          try {
-            const errData = await response.json();
-            errorMessage = errData.error || errorMessage;
-          } catch (e) {}
-          throw new Error(errorMessage);
-        }
-        
-        const data = await response.json();
-        const frames = data.frames || [];
-        const finalProvider = data.provider || "System";
-        
-        if (frames.length === 0) {
-          throw new Error("Aucune séquence d'image n'a été générée pour la vidéo.");
-        }
-        
-        const finalMsg: Message = {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: `Voici la séquence vidéo générée avec succès selon votre prompt : "${content}" (moteur ${finalProvider}).`,
-          timestamp: Date.now(),
-          providerUsed: finalProvider,
-          videoFrames: frames
-        };
-        
-        const finalMessages = [...updatedMessages, finalMsg];
-        const finalConv: Conversation = {
-          ...updatedConv,
-          messages: finalMessages,
-          updatedAt: Date.now()
-        };
-        
-        setConversation(finalConv);
-        await setDoc(doc(db, 'conversations', activeId), finalConv);
-        
-      } catch (err: any) {
-        console.error("Video generation error:", err);
-        const errMsg: Message = {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: `Échec de la génération de la vidéo : ${err.message || "Erreur inconnue."}`,
-          timestamp: Date.now(),
-          providerUsed: "Système Vidéo"
-        };
-        
-        const finalMessages = [...updatedMessages, errMsg];
-        const finalConv: Conversation = {
-          ...updatedConv,
-          messages: finalMessages,
-          updatedAt: Date.now()
-        };
-        setConversation(finalConv);
-        await setDoc(doc(db, 'conversations', activeId), finalConv);
-      } finally {
-        setIsGenerating(false);
-        setCurrentStatusText('');
-      }
-      return;
+      });
     }
 
     if (imageEngine) {
       const userMsg: Message = {
         id: `msg_${Date.now()}_user`,
         role: 'user',
-        content: `Générer une image : "${content}" (${imageEngine === 'gemini' ? 'Gemini AI' : imageEngine === 'cloudflare' ? 'Workers AI' : 'Pollinations AI'})`,
+        content: `Générer une image : "${content}"`,
         timestamp: Date.now()
       };
       
@@ -444,14 +409,12 @@ export default function App() {
       
       setConversation(updatedConv);
       setIsGenerating(true);
-      setCurrentProvider(imageEngine === 'gemini' ? 'Gemini AI' : 'Pollinations AI');
+      setCurrentProvider("Assistant");
       setCurrentStatusText("Création de l'image en cours...");
       
-      try {
-        await setDoc(doc(db, 'conversations', activeId), updatedConv);
-      } catch (err) {
-        console.error("Error saving user message:", err);
-      }
+      saveSafe(activeId, updatedConv).catch(err => {
+        console.error("Error saving user message (image):", err);
+      });
       
       const assistantMsgId = `msg_${Date.now()}_assistant`;
       let generatedUrl = '';
@@ -476,7 +439,7 @@ export default function App() {
         
         const data = await response.json();
         generatedUrl = data.imageUrl;
-        const finalProvider = data.provider || (imageEngine === 'gemini' ? 'Gemini AI' : 'Pollinations AI');
+        const finalProvider = "Assistant";
         
         if (!generatedUrl) {
           throw new Error("Aucune image n'a pu être générée.");
@@ -501,7 +464,9 @@ export default function App() {
         };
         
         setConversation(finalConv);
-        await setDoc(doc(db, 'conversations', activeId), finalConv);
+        saveSafe(activeId, finalConv).catch(err => {
+          console.error("Error saving final image conversation:", err);
+        });
         
       } catch (err: any) {
         console.error("Image generation error:", err);
@@ -520,7 +485,9 @@ export default function App() {
           updatedAt: Date.now()
         };
         setConversation(finalConv);
-        await setDoc(doc(db, 'conversations', activeId), finalConv);
+        saveSafe(activeId, finalConv).catch(err => {
+          console.error("Error saving error image conversation:", err);
+        });
       } finally {
         setIsGenerating(false);
         setCurrentStatusText('');
@@ -532,7 +499,8 @@ export default function App() {
       id: `msg_${Date.now()}_user`,
       role: 'user',
       content,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      ...(imageUrl && { imageUrl })
     };
 
     // Construct local updated messages list
@@ -554,51 +522,74 @@ export default function App() {
     setConversation(updatedConv);
     setIsGenerating(true);
     setCurrentProvider('');
-    setCurrentStatusText('Initialisation de Cephboy...');
 
-    // Save user message to Firestore immediately
-    try {
-      await setDoc(doc(db, 'conversations', activeId), updatedConv);
-    } catch (err) {
+    // Determine direct initial status text based on intent
+    const statusLower = content.toLowerCase();
+    let initialStatus = 'Réflexion en cours...';
+    if (searchWeb) {
+      if (statusLower.includes("musique") || statusLower.includes("chanson") || statusLower.includes("music") || statusLower.includes("song")) {
+        initialStatus = 'Recherche de musique...';
+      } else {
+        initialStatus = 'Recherche sur le web...';
+      }
+    } else if (
+      statusLower.includes("image") || 
+      statusLower.includes("génère une image") || 
+      statusLower.includes("crée une image") || 
+      statusLower.includes("dessin") || 
+      statusLower.includes("photo")
+    ) {
+      initialStatus = "Création de l'image...";
+    } else if (
+      statusLower.includes("analyse") || 
+      statusLower.includes("pdf") || 
+      statusLower.includes("fichier") || 
+      statusLower.includes("document")
+    ) {
+      initialStatus = 'Analyse du document...';
+    }
+
+    setCurrentStatusText(initialStatus);
+
+    // Save user message to Firestore non-blockingly
+    saveSafe(activeId, updatedConv).catch(err => {
       console.error("Error saving user message to Firestore:", err);
       handleFirestoreError(err, OperationType.UPDATE, `conversations/${activeId}`);
-    }
+    });
 
     const assistantMsgId = `msg_${Date.now()}_assistant`;
     let assistantCitations: Citation[] = [];
     let assistantImageUrl: string | undefined = undefined;
-    let assistantVideoFrames: string[] | undefined = undefined;
 
     // Now start the SSE call to Express backend
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: updatedMessages,
-          searchWeb,
-          searchSources: linkedinSearch ? [...sources, 'linkedin'] : sources,
-          selectedModel
-        })
-      });
-
-      if (!response.ok) {
-        let errorMessage = `Erreur serveur (${response.status}): Impossible de joindre Cephboy.`;
-        try {
-          const errData = await response.json();
-          errorMessage = errData.error || errorMessage;
-        } catch (e) {
-          // Si ce n'est pas du JSON, essayons de lire le texte
-          try {
-            const text = await response.text();
-            if (text && text.length < 200) errorMessage += ` Détails : ${text}`;
-          } catch (e2) {}
+    const fetchWithRetry = async (retries = 3): Promise<Response> => {
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: updatedMessages,
+            searchWeb,
+            searchSources: linkedinSearch ? [...sources, 'linkedin'] : sources,
+            selectedModel
+          })
+        });
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        return response;
+      } catch (err) {
+        if (retries > 0) {
+          console.warn(`Chat request failed, retrying... (${retries} left)`);
+          return await fetchWithRetry(retries - 1);
         }
-        throw new Error(errorMessage);
+        throw err;
       }
+    };
 
+    try {
+      const response = await fetchWithRetry();
+      
       if (!response.body) {
         throw new Error("Aucun flux de réponse reçu.");
       }
@@ -607,7 +598,7 @@ export default function App() {
       const decoder = new TextDecoder();
       let buffer = '';
       let assistantContent = '';
-      let detectedProvider = 'Cephboy AI GPT';
+      let detectedProvider = 'Assistant';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -635,10 +626,6 @@ export default function App() {
                   assistantImageUrl = payload.imageUrl;
                   if (!assistantContent) assistantContent = `Voici l'image générée avec succès !`;
                 }
-                if (payload.videoFrames) {
-                  assistantVideoFrames = payload.videoFrames;
-                  if (!assistantContent) assistantContent = `Voici la séquence vidéo générée avec succès !`;
-                }
               } else if (payload.type === 'citations') {
                 assistantCitations = payload.citations;
               } else if (payload.type === 'content') {
@@ -660,7 +647,6 @@ export default function App() {
                     citations: assistantCitations,
                     providerUsed: detectedProvider,
                     ...(assistantImageUrl && { imageUrl: assistantImageUrl }),
-                    ...(assistantVideoFrames && { videoFrames: assistantVideoFrames }),
                     isStreaming: true
                   };
 
@@ -697,6 +683,8 @@ export default function App() {
       }
 
       // Finish streaming and finalize conversation structure
+      reader.releaseLock();
+      
       const finalAssistantMsg: Message = {
         id: assistantMsgId,
         role: 'assistant',
@@ -704,7 +692,6 @@ export default function App() {
         timestamp: Date.now(),
         citations: assistantCitations,
         ...(assistantImageUrl && { imageUrl: assistantImageUrl }),
-        ...(assistantVideoFrames && { videoFrames: assistantVideoFrames }),
         providerUsed: detectedProvider
       };
 
@@ -717,13 +704,11 @@ export default function App() {
 
       setConversation(finalConv);
       
-      // Persist finished state to Firestore
-      try {
-        await setDoc(doc(db, 'conversations', activeId), finalConv);
-      } catch (err) {
+      // Persist finished state to Firestore non-blockingly
+      saveSafe(activeId, finalConv).catch(err => {
         console.error("Error persisting final conversation state to Firestore:", err);
         handleFirestoreError(err, OperationType.UPDATE, `conversations/${activeId}`);
-      }
+      });
 
     } catch (err: any) {
       console.error("SSE Chat Error:", err);
@@ -731,9 +716,9 @@ export default function App() {
       const errorMsg: Message = {
         id: `msg_${Date.now()}_err`,
         role: 'assistant',
-        content: `Une erreur est survenue : ${err.message || "Impossible de joindre les serveurs Cephboy AI GPT."}`,
+        content: `Une erreur est survenue : ${err.message || "Impossible de joindre les serveurs."}`,
         timestamp: Date.now(),
-        providerUsed: "Système Cephboy"
+        providerUsed: "Système"
       };
 
       setConversation(prev => {
@@ -779,8 +764,7 @@ export default function App() {
         });
         if (res.ok) {
           const data = await res.json();
-          setLogoVersion(Date.now());
-          alert("Logo de l'application mis à jour avec succès !");
+          alert("Logo de l'application mis à jour avec succès ! Veuillez rafraîchir la page si nécessaire.");
           return; // Stop here, don't send as chat message
         } else {
           const errData = await res.json();
@@ -805,8 +789,12 @@ export default function App() {
         updatedAt: Date.now(),
         messages: []
       };
-      await setDoc(doc(db, 'conversations', activeId), newChat);
+      saveConversationToLocalCache(newChat);
+      setConversation(newChat);
       setCurrentConversationId(activeId);
+      saveSafe(activeId, newChat).catch((err) => {
+        console.error("Failed to create auto chat for file upload:", err);
+      });
     }
 
     if (file.type.startsWith('image/')) {
@@ -849,7 +837,9 @@ export default function App() {
       };
 
       setConversation(updatedConv);
-      await setDoc(doc(db, 'conversations', activeId), updatedConv);
+      saveSafe(activeId, updatedConv).catch((err) => {
+        console.error("Failed to save parsed document to Firestore:", err);
+      });
 
       // Automatically ask AI to analyze
       handleSendMessage(userPrompt || `J'ai téléchargé un fichier nommé "${file.name}". Peux-tu l'analyser et m'en faire un résumé ou répondre à mes questions à son sujet ?`, false, ['duckduckgo', 'wikipedia']);
@@ -874,8 +864,12 @@ export default function App() {
         updatedAt: Date.now(),
         messages: []
       };
-      await setDoc(doc(db, 'conversations', activeId), newChat);
+      saveConversationToLocalCache(newChat);
+      setConversation(newChat);
       setCurrentConversationId(activeId);
+      saveSafe(activeId, newChat).catch((err) => {
+        console.error("Failed to create auto chat for image upload:", err);
+      });
     }
 
     try {
@@ -899,10 +893,12 @@ export default function App() {
       } as Conversation;
 
       setConversation(updatedConv);
-      await setDoc(doc(db, 'conversations', activeId), updatedConv);
+      saveSafe(activeId, updatedConv).catch((err) => {
+        console.error("Failed to save uploaded image to Firestore:", err);
+      });
       
       // Automatically trigger analysis for image
-      handleSendMessage(userPrompt || `J'ai téléchargé une image nommée "${file.name}". Peux-tu l'analyser et me dire ce que tu y vois ?`, false, []);
+      handleSendMessage(userPrompt || `J'ai téléchargé une image nommée "${file.name}". Peux-tu l'analyser et me dire ce que tu y vois ?`, false, [], undefined, base64);
     } catch (err) {
       console.error("Upload error:", err);
       alert("Erreur lors de l'upload de l'image.");
@@ -919,8 +915,6 @@ export default function App() {
         setIsOpen={setIsSidebarOpen}
         language={language}
         onLanguageChange={handleLanguageChange}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        logoVersion={logoVersion}
         userId={userId}
         authError={!!authError}
       />
@@ -948,9 +942,6 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-4 pt-2">
-                   <button onClick={() => setIsSettingsOpen(true)} className="text-xs text-sky-400 hover:text-sky-300 underline font-semibold cursor-pointer flex items-center gap-1.5 py-1">
-                     <Search className="w-4 h-4" /> Voir les diagnostics avancés
-                   </button>
                    <a 
                     href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`}
                     target="_blank"
@@ -1024,39 +1015,14 @@ export default function App() {
         setSearchWeb={setSearchWeb}
         isImageMode={isImageMode}
         setIsImageMode={setIsImageMode}
-        isVideoMode={isVideoMode}
-        setIsVideoMode={setIsVideoMode}
         imageEngine={imageEngine}
         setImageEngine={setImageEngine}
         linkedinSearch={linkedinSearch}
-        logoVersion={logoVersion}
         onNewConversation={handleCreateNewConversation}
         selectedModel={selectedModel}
         onSelectedModelChange={handleSetSelectedModel}
       />
       </div>
-      {isSettingsOpen && (
-        <SettingsModal 
-          isOpen={isSettingsOpen} 
-          onClose={() => setIsSettingsOpen(false)}
-          language={language}
-          onLanguageChange={handleLanguageChange}
-          searchWeb={searchWeb}
-          setSearchWeb={setSearchWeb}
-          isImageMode={isImageMode}
-          setIsImageMode={setIsImageMode}
-          imageEngine={imageEngine}
-          setImageEngine={setImageEngine}
-          linkedinSearch={linkedinSearch}
-          setLinkedinSearch={setLinkedinSearch}
-          preferCloudflare={preferCloudflare}
-          setPreferCloudflare={handleSetPreferCloudflare}
-          selectedModel={selectedModel}
-          onSelectedModelChange={handleSetSelectedModel}
-          userId={userId}
-          projectId={firebaseConfig.projectId}
-        />
-      )}
     </div>
   );
 }
